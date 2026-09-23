@@ -29,6 +29,8 @@
       scrollbar-width: thin;                     /* Firefox */
       scrollbar-color: var(--border) transparent;
     }
+    /* Pin the popup just under Chrome's 600px cap so it never resizes */
+    body { min-height: 596px; }
     /* Thin, subtle scrollbars (Chromium) — no chunky default gutter */
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
@@ -135,6 +137,7 @@
     .status.err { color: var(--err); }
     .status.info { color: var(--muted); }
 
+    #chunkInfo { display: block; margin-top: 2px; }
     .hint { font-size: 11px; color: var(--muted); line-height: 1.5; }
     #chunkInfo, #channelName { color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
     #channelName { color: var(--accent); }
@@ -200,7 +203,7 @@
       </div>
       <div class="row">
         <div>
-          <label for="chunk">Chunk size (MB) <span id="chunkInfo"></span></label>
+          <label for="chunk">Chunk size (MB)<span id="chunkInfo"></span></label>
           <input type="number" id="chunk" min="0.001" step="any" value="8" />
         </div>
         <div>

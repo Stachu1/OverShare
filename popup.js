@@ -258,12 +258,13 @@ function chunkPlan(fileSize) {
   const messages = Math.ceil(total / perMsg);
   return { chunkBytes, total, perMsg, messages };
 }
+// Always shown: chunks per message × number of messages ("x" until a file is picked).
 function updateChunkInfo() {
-  if (!payload) { els.chunkInfo.textContent = ""; return; }
-  const { total, messages } = chunkPlan(payload.zippedSize);
-  if (total === 1) { els.chunkInfo.textContent = "→ 1 chunk"; return; }
-  const msgLabel = messages === 1 ? "1 message" : `${messages} messages`;
-  els.chunkInfo.textContent = `→ ${total} chunks · ${msgLabel}`;
+  if (!payload) { els.chunkInfo.textContent = "_ chunks | _ messages"; return; }
+  const { total, perMsg, messages } = chunkPlan(payload.zippedSize);
+  const per = Math.min(perMsg, total);
+  els.chunkInfo.textContent =
+    `${per} chunk${per === 1 ? "" : "s"} | ${messages} message${messages === 1 ? "" : "s"}`;
 }
 function refreshSendState() {
   els.send.disabled = !(payload && !zipping && els.token.value.trim() && els.channel.value.trim());
