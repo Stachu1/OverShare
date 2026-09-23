@@ -143,6 +143,7 @@
     .status.ok { color: var(--ok); }
     .status.err { color: var(--err); }
     .status.info { color: var(--muted); }
+    .status-footer { padding: 0 14px 12px; }
 
     #chunkInfo { display: block; margin-top: 2px; }
     .hint { font-size: 11px; color: var(--muted); line-height: 1.5; }
@@ -158,13 +159,18 @@
     .item .meta { flex: 1; min-width: 0; }
     .item .fname { font-size: 13px; font-weight: 600; word-break: break-all; }
     .item .sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
-    .item .sub.incomplete { color: var(--err); }
+    .item .sub.incomplete { color: #f0a04b; }
     .item button {
       padding: 6px 12px; border: none; border-radius: 7px;
       background: var(--accent); color: #fff; font-size: 12px; font-weight: 600; cursor: pointer;
     }
     .item button:hover:not(:disabled) { background: var(--accent-hover); }
     .item button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .item-actions { display: flex; align-items: center; gap: 5px; }
+    .item .copy-token { padding: 5px 7px; background: transparent; color: var(--muted); border: 1px solid var(--border); font-size: 11px; font-weight: 500; }
+    .item .copy-token:hover:not(:disabled) { background: var(--panel); border-color: var(--muted); color: var(--text); }
+    .token-actions { justify-content: center; }
+    .token-actions .mini { width: 130px; }
     .empty { text-align: center; color: var(--muted); font-size: 12px; padding: 24px 0; }
   </style>
 </head>
@@ -182,11 +188,6 @@
       <label>Local transfer service</label>
       <div id="serverStatus" class="tokenstatus checking">Checking localhost:7878…</div>
     </div>
-    <div class="row">
-      <button class="mini" id="exportStorage">Export keys</button>
-      <button class="mini" id="importStorage">Import keys</button>
-      <input type="file" id="importFile" accept="application/json,.json" />
-    </div>
     <div class="tabs">
       <button id="tabSend" class="active">Send</button>
       <button id="tabDownload">Download</button>
@@ -203,22 +204,30 @@
         <input type="file" id="folder" webkitdirectory />
       </div>
       <div>
-        <label for="key">Recovery key</label>
-        <div class="row"><div><input type="text" id="key" placeholder="SHA.symmetricKey" /></div><button class="mini" id="keyAdd">Add</button><button class="mini" id="keyCopy" title="Copy recovery key">Copy</button></div>
-        <div class="hint">Keep this value. It is stored in extension local storage and is required to decrypt the transfer.</div>
+        <label for="key">File token</label>
+        <div class="row"><div><input type="text" id="key" readonly placeholder="Generated after selecting a file" /></div><button class="mini" id="keyCopy" title="Copy file token">Copy</button></div>
+        <div class="hint">Keep this file token. It is stored in extension local storage and is required to decrypt the transfer.</div>
       </div>
       <div class="progress" id="progress"><div class="bar" id="bar"></div></div>
       <button class="send" id="send" disabled>Send encrypted file</button>
     </section>
 
     <section class="panel" id="downloadPanel">
-      <div class="hint">The server searches Discord for transfers whose recovery keys are stored in this extension.</div>
-      <button class="mini" id="refreshFiles">Find available files</button>
+      <!-- <div class="hint">The server searches Discord for transfers whose file tokens are stored in this extension.</div> -->
+      <div class="row token-actions">
+        <button class="mini" id="exportStorage">Export Tokens</button>
+        <button class="mini" id="importStorage">Import Tokens</button>
+        <input type="file" id="importFile" accept="application/json,.json" />
+      </div>
+      <div class="row">
+        <div><input type="text" id="downloadToken" placeholder="Paste a file token" /></div>
+        <button class="mini" id="loadToken">Load</button>
+      </div>
       <div class="list" id="fileList"><div class="empty">Switch here to search for files.</div></div>
     </section>
 
-    <div class="status info" id="status"></div>
   </main>
+  <div class="status-footer"><div class="status info" id="status"></div></div>
 
   <script src="fflate.js"></script>
   <script src="shared.js"></script>
