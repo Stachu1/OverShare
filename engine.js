@@ -6,6 +6,15 @@ let active = null;
 let cancelRequested = false;
 
 function publish(send) { channel.postMessage({ type: "uploadState", send }); }
+function storage(operation, value) {
+	return new Promise((resolve, reject) => {
+		chrome.runtime.sendMessage({ target: "background", type: "storage", operation, ...(operation === "set" ? { items: value } : { keys: value }) }, (response) => {
+			if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+			if (!response?.ok) return reject(new Error(response?.error || "Storage operation failed"));
+			resolve(response.result);
+		});
+	});
+}
 async function uploadBytes(job) {
 	const response = await fetch(`${LOCAL_SERVER}/upload`, {
 		method: "POST",
@@ -15,7 +24,7 @@ async function uploadBytes(job) {
 	if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
 	const result = await response.json();
 	active = { ...job, jobId: result.jobId, sent: 0, total: result.total };
-	await chrome.storage.local.set({ activeUpload: { jobId: active.jobId, name: job.metadata.name, sha: job.metadata.sha, symmetricKey: job.symmetricKey, total: result.total } });
+	await storage("set", { activeUpload: { jobId: active.jobId, name: job.metadata.name, sha: job.metadata.sha, symmetricKey: job.symmetricKey, total: result.total } });
 	for (;;) {
 		if (cancelRequested) {
 			await fetch(`${LOCAL_SERVER}/upload/cancel/${active.jobId}`, { method: "POST" });
@@ -31,8 +40,8 @@ async function uploadBytes(job) {
 		if (status.state === "error") throw new Error(status.error || "Upload failed");
 		await new Promise((resolve) => setTimeout(resolve, 500));
 	}
-	await chrome.storage.local.set({ [`${job.metadata.sha}.symmetricKey`]: job.symmetricKey, lastFileToken: `${job.metadata.sha}.${job.symmetricKey}` });
-	await chrome.storage.local.remove("activeUpload");
+	await storage("set", { [`${job.metadata.sha}.symmetricKey`]: job.symmetricKey, lastFileToken: `${job.metadata.sha}.${job.symmetricKey}` });
+	await storage("remove", ["activeUpload"]);
 	publish({ active: false, outcome: "ok", name: job.metadata.name, sent: active.total, total: active.total });
 	active = null;
 }
@@ -44,7 +53,7 @@ channel.onmessage = async (event) => {
 		try { await uploadBytes(message.job); }
 		catch (error) {
 			const canceled = error.name === "AbortError";
-			await chrome.storage.local.remove("activeUpload");
+			await storage("remove", ["activeUpload"]);
 			publish({ active: false, outcome: canceled ? "canceled" : "error", error: error.message });
 			active = null;
 		}

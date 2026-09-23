@@ -22,6 +22,7 @@ UPLOAD_JOBS_LOCK = threading.Lock()
 def allow_extension_requests(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-OverShare-Metadata"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     return response
 
 

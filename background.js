@@ -30,4 +30,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       .then((id) => sendResponse({ id }), (e) => sendResponse({ error: e.message }));
     return true;
   }
+  if (msg.type === "storage") {
+    const operation = msg.operation === "get"
+      ? chrome.storage.local.get(msg.keys)
+      : msg.operation === "set"
+        ? chrome.storage.local.set(msg.items)
+        : msg.operation === "remove"
+          ? chrome.storage.local.remove(msg.keys)
+          : Promise.reject(new Error("Unknown storage operation"));
+    operation.then((result) => sendResponse({ ok: true, result }), (e) => sendResponse({ error: e.message }));
+    return true;
+  }
 });

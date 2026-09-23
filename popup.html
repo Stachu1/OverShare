@@ -172,7 +172,9 @@
     }
     .item button:hover:not(:disabled) { background: var(--accent-hover); }
     .item button:disabled { opacity: 0.4; cursor: not-allowed; }
-    .item-actions { display: flex; align-items: center; gap: 5px; }
+    .item-actions { display: flex; flex-direction: column; align-items: stretch; gap: 5px; min-width: 104px; }
+    .secondary-actions { display: flex; gap: 5px; }
+    .secondary-actions button { flex: 1; }
     .item .copy-token { padding: 5px 7px; background: transparent; color: var(--muted); border: 1px solid var(--border); font-size: 11px; font-weight: 500; }
     .item .copy-token:hover:not(:disabled) { background: var(--panel); border-color: var(--muted); color: var(--text); }
     .item .delete-file { padding: 5px 7px; background: transparent; color: #ff8a8a; border: 1px solid #8e3e45; font-size: 11px; font-weight: 500; }
@@ -231,6 +233,7 @@
         <button class="mini delete-tokens" id="deleteStorage">Delete Tokens</button>
         <input type="file" id="importFile" accept="application/json,.json" />
       </div>
+      <label for="downloadToken">File token</label>
       <div class="row">
         <div><input type="password" id="downloadToken" placeholder="Paste a file token" /></div>
         <button class="mini" id="loadToken">Load</button>
