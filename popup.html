@@ -146,8 +146,7 @@
 
     #chunkInfo { display: block; margin-top: 2px; }
     .hint { font-size: 11px; color: var(--muted); line-height: 1.5; }
-    #chunkInfo, #channelName { color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
-    #channelName { color: var(--accent); }
+    #chunkInfo { color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
 
     /* Download list */
     .list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
@@ -178,26 +177,21 @@
   </header>
 
   <main>
-    <!-- Shared: auth + target (used by both tabs) -->
+    <!-- The Python bridge owns the Discord bot token. -->
     <div>
-      <label for="token">Account token</label>
-      <input type="password" id="token" placeholder="auto-detected on Discord, or paste here" autocomplete="off" />
-      <div id="tokenStatus" class="tokenstatus checking">Checking token…</div>
+      <label>Local transfer service</label>
+      <div id="serverStatus" class="tokenstatus checking">Checking localhost:7878…</div>
     </div>
-    <div>
-      <label for="channel">Channel / DM ID <span id="channelName"></span></label>
-      <div class="row">
-        <div><input type="text" id="channel" placeholder="e.g. 123456789012345678" autocomplete="off" /></div>
-        <select id="knownChannels" class="mini-select" title="Saved channels"></select>
-      </div>
+    <div class="row">
+      <button class="mini" id="exportStorage">Export keys</button>
+      <button class="mini" id="importStorage">Import keys</button>
+      <input type="file" id="importFile" accept="application/json,.json" />
     </div>
-
     <div class="tabs">
       <button id="tabSend" class="active">Send</button>
       <button id="tabDownload">Download</button>
     </div>
 
-    <!-- SEND -->
     <section class="panel active" id="sendPanel">
       <div>
         <label>File or folder</label>
@@ -205,32 +199,22 @@
           <div class="drop" id="drop"><div id="dropLabel">Click for a file, or drop a file / folder</div></div>
           <button class="mini" id="folderBtn">📁 Or pick a folder…</button>
         </div>
-        <input type="file" id="file" />
+        <input type="file" id="file" multiple />
         <input type="file" id="folder" webkitdirectory />
       </div>
-      <div class="row">
-        <div>
-          <label for="chunk">Chunk size (MB)<span id="chunkInfo"></span></label>
-          <input type="number" id="chunk" min="0.001" step="any" value="20" />
-        </div>
-        <div>
-          <label for="maxmsg">Files / message</label>
-          <input type="number" id="maxmsg" min="1" max="10" step="1" value="10" />
-        </div>
+      <div>
+        <label for="key">Recovery key</label>
+        <div class="row"><div><input type="text" id="key" placeholder="SHA.symmetricKey" /></div><button class="mini" id="keyAdd">Add</button><button class="mini" id="keyCopy" title="Copy recovery key">Copy</button></div>
+        <div class="hint">Keep this value. It is stored in extension local storage and is required to decrypt the transfer.</div>
       </div>
-      <!-- <div>
-        <label for="note">Message (optional)</label>
-        <textarea id="note" rows="1" placeholder=""></textarea>
-      </div> -->
       <div class="progress" id="progress"><div class="bar" id="bar"></div></div>
-      <button class="send" id="send" disabled>Send file</button>
+      <button class="send" id="send" disabled>Send encrypted file</button>
     </section>
 
-    <!-- DOWNLOAD -->
     <section class="panel" id="downloadPanel">
-      <div id="loadOlderWrap"></div>
-      <div class="list" id="fileList"><div class="empty">Files from this channel will appear here.</div></div>
-      <div class="progress" id="dlProgress"><div class="bar" id="dlBar"></div></div>
+      <div class="hint">The server searches Discord for transfers whose recovery keys are stored in this extension.</div>
+      <button class="mini" id="refreshFiles">Find available files</button>
+      <div class="list" id="fileList"><div class="empty">Switch here to search for files.</div></div>
     </section>
 
     <div class="status info" id="status"></div>

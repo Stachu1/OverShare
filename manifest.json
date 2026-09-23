@@ -1,22 +1,17 @@
 {
   "manifest_version": 3,
   "name": "OverShare",
-  "version": "1.0.0",
+  "version": "2.1.0",
   "description": "Send and receive large files or folders on Discord (channels or DMs): zipped, split into chunks, SHA-256 verified, and reassembled on download.",
   "action": {
     "default_title": "OverShare",
     "default_popup": "popup.html"
   },
-  "permissions": ["storage", "scripting", "activeTab", "downloads", "offscreen"],
+  "permissions": ["storage", "downloads", "offscreen"],
   "background": {
     "service_worker": "background.js"
   },
-  "host_permissions": [
-    "https://discord.com/*",
-    "https://discordapp.com/*",
-    "https://cdn.discordapp.com/*",
-    "https://media.discordapp.net/*"
-  ],
+  "host_permissions": ["http://localhost:7878/*"],
   "icons": {
     "128": "icon128.png"
   }
