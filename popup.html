@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Overshare</title>
+  <title>OverShare</title>
   <style>
     :root {
       --bg: #1b1c22;
@@ -35,8 +35,8 @@
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: #565866; }
     header {
-      display: flex; align-items: center; gap: 10px;
-      padding: 14px 16px; background: var(--panel);
+      display: flex; align-items: center; gap: 9px;
+      padding: 11px 14px; background: var(--panel);
       border-bottom: 1px solid var(--border);
     }
     header .dot {
@@ -45,18 +45,23 @@
     }
     header h1 { font-size: 15px; font-weight: 600; margin: 0; flex: 1; }
     header .version { font-size: 11px; font-weight: 600; color: var(--muted); }
+    .iconbtn {
+      background: none; border: none; cursor: pointer; padding: 0 2px;
+      font-size: 15px; line-height: 1; opacity: 0.85;
+    }
+    .iconbtn:hover { opacity: 1; }
 
-    main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+    main { padding: 14px; display: flex; flex-direction: column; gap: 9px; }
 
     label {
       display: block; font-size: 12px; color: var(--muted);
-      margin-bottom: 6px; font-weight: 600; letter-spacing: 0.02em;
+      margin-bottom: 4px; font-weight: 600; letter-spacing: 0.02em;
     }
     .row { display: flex; gap: 8px; align-items: flex-end; }
     .row > div { flex: 1; }
 
     input[type="text"], input[type="password"], input[type="number"], textarea {
-      width: 100%; padding: 10px 12px;
+      width: 100%; padding: 9px 12px;
       background: var(--panel-2); border: 1px solid var(--border);
       border-radius: 8px; color: var(--text); font-size: 13px;
       outline: none; transition: border-color 0.15s;
@@ -74,6 +79,19 @@
     }
     button.mini:hover { border-color: var(--accent); }
 
+    .tokenstatus { font-size: 11px; font-weight: 600; margin-top: 5px; }
+    .tokenstatus::before { content: "● "; }
+    .tokenstatus.ok { color: var(--ok); }
+    .tokenstatus.bad { color: var(--err); }
+    .tokenstatus.checking { color: var(--muted); }
+
+    select.mini-select {
+      padding: 9px 8px; background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text); font-size: 12px; font-weight: 600;
+      cursor: pointer; max-width: 120px;
+    }
+    select.mini-select:hover { border-color: var(--accent); }
+
     /* Tabs */
     .tabs { display: flex; gap: 6px; background: var(--panel-2); padding: 4px; border-radius: 10px; }
     .tabs button {
@@ -83,12 +101,12 @@
     }
     .tabs button.active { background: var(--accent); color: #fff; }
 
-    .panel { display: none; flex-direction: column; gap: 14px; }
+    .panel { display: none; flex-direction: column; gap: 9px; }
     .panel.active { display: flex; }
 
     .drop {
       border: 1.5px dashed var(--border); border-radius: 10px;
-      padding: 18px; text-align: center; color: var(--muted);
+      padding: 13px; text-align: center; color: var(--muted);
       cursor: pointer; transition: border-color 0.15s, background 0.15s;
     }
     .drop:hover, .drop.drag { border-color: var(--accent); background: var(--panel-2); }
@@ -96,9 +114,13 @@
     .drop .name { font-weight: 600; word-break: break-all; }
     .drop .size { font-size: 12px; color: var(--muted); margin-top: 4px; }
     input[type="file"] { display: none; }
+    /* Drop zone and folder button side by side, same height */
+    .pick { display: flex; gap: 8px; align-items: stretch; }
+    .pick .drop { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; }
+    .pick #folderBtn { width: 96px; flex-shrink: 0; white-space: normal; line-height: 1.3; }
 
     button.send {
-      width: 100%; padding: 12px; background: var(--accent); color: #fff;
+      width: 100%; padding: 10px; background: var(--accent); color: #fff;
       border: none; border-radius: 8px; font-size: 14px; font-weight: 600;
       cursor: pointer; transition: background 0.15s;
     }
@@ -114,7 +136,8 @@
     .status.info { color: var(--muted); }
 
     .hint { font-size: 11px; color: var(--muted); line-height: 1.5; }
-    #chunkInfo { color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
+    #chunkInfo, #channelName { color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
+    #channelName { color: var(--accent); }
 
     /* Download list */
     .list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
@@ -139,22 +162,24 @@
 <body>
   <header>
     <span class="dot"></span>
-    <h1>Overshare</h1>
+    <h1>OverShare</h1>
     <span class="version" id="version"></span>
+    <button class="iconbtn" id="mute" title="Mute sounds">🔊</button>
   </header>
 
   <main>
     <!-- Shared: auth + target (used by both tabs) -->
-    <div class="row">
-      <div>
-        <label for="token">Account token</label>
-        <input type="password" id="token" placeholder="paste, or click Detect" autocomplete="off" />
-      </div>
-      <button class="mini" id="detect" title="Read token + channel from the active Discord tab">Detect</button>
+    <div>
+      <label for="token">Account token</label>
+      <input type="password" id="token" placeholder="auto-detected on Discord, or paste here" autocomplete="off" />
+      <div id="tokenStatus" class="tokenstatus checking">Checking token…</div>
     </div>
     <div>
-      <label for="channel">Channel / DM ID</label>
-      <input type="text" id="channel" placeholder="e.g. 123456789012345678" autocomplete="off" />
+      <label for="channel">Channel / DM ID <span id="channelName"></span></label>
+      <div class="row">
+        <div><input type="text" id="channel" placeholder="e.g. 123456789012345678" autocomplete="off" /></div>
+        <select id="knownChannels" class="mini-select" title="Saved channels"></select>
+      </div>
     </div>
 
     <div class="tabs">
@@ -165,9 +190,13 @@
     <!-- SEND -->
     <section class="panel active" id="sendPanel">
       <div>
-        <label>File</label>
-        <div class="drop" id="drop"><div id="dropLabel">Click or drop a file here</div></div>
+        <label>File or folder</label>
+        <div class="pick">
+          <div class="drop" id="drop"><div id="dropLabel">Click for a file, or drop a file / folder</div></div>
+          <button class="mini" id="folderBtn">📁 Or pick a folder…</button>
+        </div>
         <input type="file" id="file" />
+        <input type="file" id="folder" webkitdirectory />
       </div>
       <div class="row">
         <div>
@@ -196,6 +225,7 @@
     <div class="status info" id="status"></div>
   </main>
 
+  <script src="fflate.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

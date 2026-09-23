@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "Overshare",
-  "version": "0.9.1",
-  "description": "Send and receive large files on Discord (channels or DMs) by auto-splitting them into chunks and reassembling on download.",
+  "name": "OverShare",
+  "version": "0.17.0",
+  "description": "Send and receive large files or folders on Discord (channels or DMs): zipped, split into chunks, SHA-256 verified, and reassembled on download.",
   "action": {
-    "default_title": "Overshare",
+    "default_title": "OverShare",
     "default_popup": "popup.html"
   },
   "permissions": ["storage", "scripting", "activeTab", "downloads"],
