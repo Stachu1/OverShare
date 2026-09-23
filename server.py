@@ -4,6 +4,8 @@ import hashlib
 import os
 import time
 import base64
+import threading
+import uuid
 
 import requests
 from flask import Flask, Response, request
@@ -12,6 +14,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 app = Flask(__name__)
 DISCORD_API = "https://discord.com/api/v10"
 CHUNK_BYTES = 20 * 1024 * 1024
+UPLOAD_JOBS = {}
+UPLOAD_JOBS_LOCK = threading.Lock()
 
 
 @app.after_request
@@ -55,6 +59,20 @@ def discord_get(path, **params):
             continue
         response.raise_for_status()
         return response.json()
+
+
+def discord_delete(path):
+    token = os.environ.get("OVERSHARE_DISCORD_BOT_TOKEN")
+    if not token:
+        raise RuntimeError("OVERSHARE_DISCORD_BOT_TOKEN is not set")
+    while True:
+        response = requests.delete(f"{DISCORD_API}{path}", headers={"Authorization": f"Bot {token}"}, timeout=60)
+        if response.status_code == 429:
+            time.sleep(float(response.json().get("retry_after", 1)))
+            continue
+        if response.status_code == 404:
+            return
+        response.raise_for_status()
 
 
 def channel_id():
@@ -117,41 +135,116 @@ def manifests_for_keys(keys):
     return result, found
 
 
+def delete_messages_for_shas(wanted):
+    messages = []
+    before = None
+    for _ in range(100):
+        params = {"limit": 100}
+        if before:
+            params["before"] = before
+        page = discord_get(f"/channels/{channel_id()}/messages", **params)
+        messages.extend(page)
+        if len(page) < 100:
+            break
+        before = page[-1].get("id")
+        if not before:
+            break
+    deleted = 0
+    for message in messages:
+        matches = any(sha in message.get("content", "") for sha in wanted)
+        matches = matches or any(
+            attachment.get("filename", "").rsplit(".", 1)[0] in wanted
+            for attachment in message.get("attachments", [])
+            if "." in attachment.get("filename", "")
+        )
+        if matches:
+            discord_delete(f"/channels/{channel_id()}/messages/{message['id']}")
+            deleted += 1
+    return deleted
+
+
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+def run_upload(job_id, metadata, body):
+    try:
+        target_channel = channel_id()
+        sha = str(metadata["sha"])
+        total = int(metadata["total"])
+        manifest = {"sha": sha, "name": metadata["name"], "kind": metadata["kind"], "originalSize": metadata["originalSize"], "encryptedSize": len(body), "total": total}
+        discord_post(target_channel, f"OVERSHARE|{json.dumps(manifest, separators=(',', ':'))}")
+        with UPLOAD_JOBS_LOCK:
+            if UPLOAD_JOBS[job_id].get("cancel_requested"):
+                raise RuntimeError("Upload canceled")
+        for index in range(total):
+            chunk = body[index * CHUNK_BYTES:(index + 1) * CHUNK_BYTES]
+            discord_post(target_channel, filename=f"{sha}.{index + 1}_{total}", data=chunk)
+            with UPLOAD_JOBS_LOCK:
+                UPLOAD_JOBS[job_id]["sent"] = index + 1
+                canceled = UPLOAD_JOBS[job_id].get("cancel_requested")
+            if canceled:
+                raise RuntimeError("Upload canceled")
+        with UPLOAD_JOBS_LOCK:
+            UPLOAD_JOBS[job_id]["state"] = "complete"
+    except Exception as error:
+        canceled = "Upload canceled" in str(error)
+        if canceled:
+            try:
+                delete_messages_for_shas({str(metadata.get("sha"))})
+            except Exception as cleanup_error:
+                error = RuntimeError(f"{error}; cleanup failed: {cleanup_error}")
+        with UPLOAD_JOBS_LOCK:
+            UPLOAD_JOBS[job_id]["state"] = "canceled" if canceled else "error"
+            UPLOAD_JOBS[job_id]["error"] = str(error)
 
 
 @app.post("/upload")
 def upload():
     try:
         metadata = json.loads(request.headers.get("X-OverShare-Metadata", "{}"))
-        target_channel = channel_id()
         sha = str(metadata["sha"])
-        total = int(metadata["total"])
         body = request.get_data(cache=False)
+        total = int(metadata["total"])
         if hashlib.sha256(body).hexdigest() != sha:
             raise ValueError("encrypted payload SHA-256 does not match metadata")
         if total < 1 or total != (int(metadata["encryptedSize"]) + CHUNK_BYTES - 1) // CHUNK_BYTES:
             raise ValueError("invalid chunk metadata")
         if len(body) != int(metadata["encryptedSize"]):
             raise ValueError("encrypted payload size does not match metadata")
-        manifest = {
-            "sha": sha, "name": metadata["name"], "kind": metadata["kind"],
-            "originalSize": metadata["originalSize"], "encryptedSize": len(body), "total": total,
-        }
-        content = f"OVERSHARE|{json.dumps(manifest, separators=(',', ':'))}"
-        discord_post(target_channel, content)
-        for index in range(total):
-            chunk = body[index * CHUNK_BYTES:(index + 1) * CHUNK_BYTES]
-            discord_post(target_channel, filename=f"{sha}.{index + 1}_{total}", data=chunk)
-        return {"ok": True, "sha": sha, "total": total}
+        job_id = uuid.uuid4().hex
+        with UPLOAD_JOBS_LOCK:
+            UPLOAD_JOBS[job_id] = {"state": "sending", "sent": 0, "total": total}
+        threading.Thread(target=run_upload, args=(job_id, metadata, body), daemon=True).start()
+        return {"jobId": job_id, "sha": sha, "total": total}, 202
     except (KeyError, ValueError, json.JSONDecodeError) as error:
         return Response(str(error), status=400)
     except requests.HTTPError as error:
         return Response(f"Discord upload failed: {error}", status=502)
     except Exception as error:
         return Response(str(error), status=500)
+
+
+@app.get("/upload/status/<job_id>")
+def upload_status(job_id):
+    with UPLOAD_JOBS_LOCK:
+        job = UPLOAD_JOBS.get(job_id)
+    if not job:
+        return Response("upload job not found", status=404)
+    return job
+
+
+@app.post("/upload/cancel/<job_id>")
+def cancel_upload(job_id):
+    with UPLOAD_JOBS_LOCK:
+        job = UPLOAD_JOBS.get(job_id)
+        if not job:
+            return Response("upload job not found", status=404)
+        if job["state"] != "sending":
+            return {"state": job["state"]}
+        job["cancel_requested"] = True
+    return {"state": "canceling"}
 
 
 @app.route("/files", methods=["OPTIONS"])
@@ -165,6 +258,47 @@ def files():
         keys = request.get_json(force=True).get("keys", [])
         available, _ = manifests_for_keys(keys)
         return {"files": available}
+    except Exception as error:
+        return Response(str(error), status=500)
+
+
+@app.route("/delete", methods=["OPTIONS"])
+def delete_options():
+    return "", 204
+
+
+@app.post("/delete")
+def delete_files():
+    try:
+        keys = request.get_json(force=True).get("keys", [])
+        wanted = {key.split(".", 1)[0] for key in keys if "." in key}
+        if not wanted:
+            return {"deleted": 0}
+        messages = []
+        before = None
+        for _ in range(100):
+            params = {"limit": 100}
+            if before:
+                params["before"] = before
+            page = discord_get(f"/channels/{channel_id()}/messages", **params)
+            messages.extend(page)
+            if len(page) < 100:
+                break
+            before = page[-1].get("id")
+            if not before:
+                break
+        deleted = 0
+        for message in messages:
+            matches = any(sha in message.get("content", "") for sha in wanted)
+            matches = matches or any(
+                attachment.get("filename", "").rsplit(".", 1)[0] in wanted
+                for attachment in message.get("attachments", [])
+                if "." in attachment.get("filename", "")
+            )
+            if matches:
+                discord_delete(f"/channels/{channel_id()}/messages/{message['id']}")
+                deleted += 1
+        return {"deleted": deleted}
     except Exception as error:
         return Response(str(error), status=500)
 

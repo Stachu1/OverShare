@@ -21,6 +21,9 @@
     html, body {
       margin: 0;
       width: 360px;
+      height: 600px;
+      max-height: 600px;
+      overflow: hidden;
       font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       background: var(--bg);
       color: var(--text);
@@ -29,6 +32,7 @@
       scrollbar-width: thin;                     /* Firefox */
       scrollbar-color: var(--border) transparent;
     }
+    body { display: flex; flex-direction: column; }
     /* Pin the popup just under Chrome's 600px cap so it never resizes */
     body { min-height: 596px; }
     /* Thin, subtle scrollbars (Chromium) — no chunky default gutter */
@@ -53,7 +57,7 @@
     }
     .iconbtn:hover { opacity: 1; }
 
-    main { padding: 14px; display: flex; flex-direction: column; gap: 9px; }
+    main { flex: 1; min-height: 0; overflow: hidden; padding: 14px; display: flex; flex-direction: column; gap: 9px; }
 
     label {
       display: block; font-size: 12px; color: var(--muted);
@@ -95,7 +99,7 @@
     select.mini-select:hover { border-color: var(--accent); }
 
     /* Tabs */
-    .tabs { display: flex; gap: 6px; background: var(--panel-2); padding: 4px; border-radius: 10px; }
+    .tabs { flex: 0 0 auto; display: flex; gap: 12px; background: var(--panel-2); padding: 4px; border-radius: 10px; }
     .tabs button {
       flex: 1; padding: 8px; border: none; border-radius: 7px;
       background: transparent; color: var(--muted);
@@ -104,7 +108,7 @@
     .tabs button.active { background: var(--accent); color: #fff; }
 
     .panel { display: none; flex-direction: column; gap: 9px; }
-    .panel.active { display: flex; }
+    .panel.active { display: flex; min-height: 0; }
 
     .drop {
       border: 1.5px dashed var(--border); border-radius: 10px;
@@ -143,13 +147,15 @@
     .status.ok { color: var(--ok); }
     .status.err { color: var(--err); }
     .status.info { color: var(--muted); }
-    .status-footer { padding: 0 14px 12px; }
+    .status-footer { flex: 0 0 auto; padding: 0 14px 12px; }
 
     #chunkInfo { display: block; margin-top: 2px; }
     .hint { font-size: 11px; color: var(--muted); line-height: 1.5; }
     #chunkInfo { color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
 
     /* Download list */
+    .downloadPanel { flex: 1; min-height: 0; overflow: hidden; }
+    .downloadPanel .list { flex: 1; min-height: 0; max-height: none; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
     .list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
     .item {
       display: flex; align-items: center; gap: 10px;
@@ -169,8 +175,13 @@
     .item-actions { display: flex; align-items: center; gap: 5px; }
     .item .copy-token { padding: 5px 7px; background: transparent; color: var(--muted); border: 1px solid var(--border); font-size: 11px; font-weight: 500; }
     .item .copy-token:hover:not(:disabled) { background: var(--panel); border-color: var(--muted); color: var(--text); }
+    .item .delete-file { padding: 5px 7px; background: transparent; color: #ff8a8a; border: 1px solid #8e3e45; font-size: 11px; font-weight: 500; }
+    .item .delete-file:hover:not(:disabled) { background: #4a252b; border-color: var(--err); color: #fff; }
+    .copy-send-token { font-size: 11px; padding: 7px 10px; }
     .token-actions { justify-content: center; }
-    .token-actions .mini { width: 130px; }
+    .token-actions .mini { width: 108px; padding: 7px 8px; }
+    .token-actions .delete-tokens { color: #ff8a8a; border-color: #8e3e45; }
+    .token-actions .delete-tokens:hover { color: #fff; border-color: var(--err); background: #4a252b; }
     .empty { text-align: center; color: var(--muted); font-size: 12px; padding: 24px 0; }
   </style>
 </head>
@@ -204,9 +215,9 @@
         <input type="file" id="folder" webkitdirectory />
       </div>
       <div>
-        <label for="key">File token</label>
-        <div class="row"><div><input type="text" id="key" readonly placeholder="Generated after selecting a file" /></div><button class="mini" id="keyCopy" title="Copy file token">Copy</button></div>
-        <div class="hint">Keep this file token. It is stored in extension local storage and is required to decrypt the transfer.</div>
+        <label>File token</label>
+        <div class="row"><button class="mini copy-send-token" id="keyCopy" title="Copy file token">Copy Token</button></div>
+        <div class="hint">The file token is available after selecting a file and is stored after a successful send.</div>
       </div>
       <div class="progress" id="progress"><div class="bar" id="bar"></div></div>
       <button class="send" id="send" disabled>Send encrypted file</button>
@@ -217,13 +228,15 @@
       <div class="row token-actions">
         <button class="mini" id="exportStorage">Export Tokens</button>
         <button class="mini" id="importStorage">Import Tokens</button>
+        <button class="mini delete-tokens" id="deleteStorage">Delete Tokens</button>
         <input type="file" id="importFile" accept="application/json,.json" />
       </div>
       <div class="row">
-        <div><input type="text" id="downloadToken" placeholder="Paste a file token" /></div>
+        <div><input type="password" id="downloadToken" placeholder="Paste a file token" /></div>
         <button class="mini" id="loadToken">Load</button>
       </div>
       <div class="list" id="fileList"><div class="empty">Switch here to search for files.</div></div>
+      <div class="progress" id="downloadProgress"><div class="bar" id="downloadBar"></div></div>
     </section>
 
   </main>

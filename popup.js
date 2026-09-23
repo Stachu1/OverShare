@@ -2,12 +2,14 @@
 
 const CHUNK_BYTES = 20 * 1024 * 1024;
 const LOCAL_SERVER = "http://localhost:7878";
-const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "key", "keyCopy", "downloadToken", "loadToken", "serverStatus", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "exportStorage", "importStorage", "importFile", "mute"];
+const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "serverStatus", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute"];
 const els = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 let selection = null;
 let payload = null;
 let preparing = false;
 let muted = false;
+let activeUpload = null;
+let uploadMonitor = 0;
 
 els.version.textContent = "v" + chrome.runtime.getManifest().version;
 function setStatus(message, kind = "info") { els.status.textContent = message; els.status.className = `status ${kind}`; }
@@ -53,12 +55,53 @@ async function prepareSelection() {
     const sha = await sha256hex(bytes); const symmetricKey = base64url(rawKey);
     payload = { kind: selection.kind, name: selection.name, bytes, sha, symmetricKey, originalSize: selection.files.reduce((n, r) => n + r.file.size, 0), entries: selection.files.length };
     els.dropLabel.innerHTML = `<div class="name">${escapeHtml(selection.name)}${selection.kind === "folder" ? "/" : ""}</div><div class="size">${humanSize(payload.originalSize)} → ${humanSize(bytes.length)} encrypted<br>${Math.ceil(bytes.length / CHUNK_BYTES)} chunks</div>`;
-    els.key.value = `${sha}.${symmetricKey}`;
     setStatus("Ready. The file token will be stored after sending.", "ok");
   } catch (error) { setStatus("Preparation failed: " + error.message, "err"); els.dropLabel.textContent = "Click for a file, or drop a file / folder"; els.drop.classList.remove("has-file"); }
   finally { preparing = false; refreshSendState(); }
 }
-function refreshSendState() { els.send.disabled = !payload || preparing; }
+function refreshSendState() {
+  if (activeUpload) {
+    els.send.disabled = false;
+    els.send.textContent = activeUpload.canceling ? "Canceling…" : "Cancel";
+    els.send.classList.add("cancel");
+    return;
+  }
+  els.send.classList.remove("cancel");
+  els.send.textContent = "Send encrypted file";
+  els.send.disabled = !payload || preparing;
+}
+function applyUploadState(state) {
+  if (state.active) {
+    activeUpload = { ...activeUpload, ...state };
+    els.progress.style.display = "block";
+    els.bar.style.width = Math.round(((state.sent || 0) / (state.total || 1)) * 100) + "%";
+    setStatus(state.canceling ? "Canceling upload…" : `Sending chunks: ${state.sent || 0}/${state.total || 1}`, "info");
+  } else if (activeUpload) {
+    const old = activeUpload;
+    activeUpload = null;
+    refreshSendState();
+    if (state.outcome === "ok") { els.bar.style.width = "100%"; playSound("send"); setStatus(`Sent ${state.name || old.name}: ${state.total || old.total} chunk(s) ✓`, "ok"); }
+    else if (state.outcome === "canceled") setStatus("Upload canceled and partial Discord messages removed.", "info");
+    else if (state.outcome === "error") setStatus("Send failed: " + (state.error || "Upload failed"), "err");
+  }
+}
+async function monitorStoredUpload(record) {
+  const monitorId = ++uploadMonitor;
+  activeUpload = record;
+  refreshSendState();
+  for (;;) {
+    if (monitorId !== uploadMonitor || !activeUpload) return;
+    try {
+      const response = await fetch(`${LOCAL_SERVER}/upload/status/${record.jobId}`);
+      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      const state = await response.json();
+      applyUploadState({ active: state.state === "sending", jobId: record.jobId, name: record.name, sent: state.sent, total: state.total, state: state.state });
+      if (state.state === "complete") { activeUpload = null; refreshSendState(); return; }
+      if (state.state === "canceled" || state.state === "error") { applyUploadState({ active: false, outcome: state.state === "canceled" ? "canceled" : "error", error: state.error, name: record.name, total: record.total }); return; }
+    } catch (error) { setStatus("Upload status failed: " + error.message, "err"); return; }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+}
 
 let audioContext = null;
 function playTone(frequency, duration, delay = 0) {
@@ -116,7 +159,9 @@ function renderFiles(files) {
     const button = document.createElement("button"); button.textContent = "Download"; button.disabled = !file.available; button.addEventListener("click", () => downloadFile(file, button));
     const copyButton = document.createElement("button"); copyButton.className = "copy-token"; copyButton.textContent = "Copy"; copyButton.title = "Copy file token";
     copyButton.addEventListener("click", () => copyFileToken(file, copyButton));
-    actions.append(copyButton, button); item.append(meta, actions); els.fileList.appendChild(item);
+    const deleteButton = document.createElement("button"); deleteButton.className = "delete-file"; deleteButton.textContent = "Delete"; deleteButton.title = "Delete this file from Discord and local storage";
+    deleteButton.addEventListener("click", () => deleteFileToken(file, deleteButton));
+    actions.append(copyButton, button, deleteButton); item.append(meta, actions); els.fileList.appendChild(item);
   }
 }
 async function copyFileToken(file, button) {
@@ -127,6 +172,24 @@ async function copyFileToken(file, button) {
     await navigator.clipboard.writeText(`${file.sha}.${symmetricKey}`);
     setStatus("File token copied to clipboard.", "ok");
   } catch (error) { setStatus("Copy failed: " + error.message, "err"); }
+}
+async function deleteFileToken(file, button) {
+  const keyData = await chrome.storage.local.get(`${file.sha}.symmetricKey`);
+  const symmetricKey = keyData[`${file.sha}.symmetricKey`];
+  if (!symmetricKey) { setStatus("Delete failed: token is not stored locally.", "err"); return; }
+  if (!confirm(`Delete "${file.name}" from Discord and local storage? This cannot be undone.`)) return;
+  button.disabled = true;
+  try {
+    const response = await fetch(`${LOCAL_SERVER}/delete`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keys: [`${file.sha}.${symmetricKey}`] }) });
+    if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+    await chrome.storage.local.remove([`${file.sha}.symmetricKey`]);
+    const data = await chrome.storage.local.get(["lastFileToken", "lastKey"]);
+    const token = `${file.sha}.${symmetricKey}`;
+    await chrome.storage.local.remove([...(data.lastFileToken === token ? ["lastFileToken"] : []), ...(data.lastKey === token ? ["lastKey"] : [])]);
+    setStatus(`Deleted ${file.name}.`, "ok");
+    refreshFiles();
+  } catch (error) { setStatus("Delete failed: " + error.message, "err"); }
+  finally { button.disabled = false; }
 }
 async function refreshFiles() {
   els.fileList.innerHTML = '<div class="empty">Searching Discord…</div>';
@@ -150,8 +213,59 @@ async function saveFolder(dirHandle, files) {
     const handle = await current.getFileHandle(filename, { create: true }); const writer = await handle.createWritable(); await writer.write(bytes); await writer.close();
   }
 }
+function uploadPayload(url, metadata, bytes, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.setRequestHeader("X-OverShare-Metadata", JSON.stringify(metadata));
+    xhr.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
+    });
+    xhr.addEventListener("load", () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try { resolve(JSON.parse(xhr.responseText || "{}")); }
+        catch (_) { reject(new Error("Invalid upload response")); }
+      }
+      else reject(new Error(xhr.responseText || `HTTP ${xhr.status}`));
+    });
+    xhr.addEventListener("error", () => reject(new Error("Network error")));
+    xhr.addEventListener("timeout", () => reject(new Error("Upload timed out")));
+    xhr.timeout = 15 * 60 * 1000;
+    xhr.send(bytes);
+  });
+}
+async function waitForUpload(jobId, onProgress) {
+  for (;;) {
+    const response = await fetch(`${LOCAL_SERVER}/upload/status/${jobId}`);
+    if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+    const job = await response.json();
+    onProgress(job.sent || 0, job.total || 1);
+    if (job.state === "complete") return;
+    if (job.state === "error") throw new Error(job.error || "Upload failed");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+}
+async function readDownloadResponse(response, onProgress) {
+  if (!response.body) return new Uint8Array(await response.arrayBuffer());
+  const expected = Number(response.headers.get("Content-Length")) || 0;
+  const reader = response.body.getReader();
+  const chunks = [];
+  let received = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value); received += value.length;
+    if (expected) onProgress(Math.min(100, Math.round((received / expected) * 100)));
+  }
+  const bytes = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+  return bytes;
+}
 async function downloadFile(file, button) {
   button.disabled = true; button.textContent = "Downloading…";
+  els.downloadProgress.style.display = "block"; els.downloadBar.style.width = "0%";
   let dirHandle = null;
   try {
     if (file.kind === "folder" && window.showDirectoryPicker) dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
@@ -159,13 +273,13 @@ async function downloadFile(file, button) {
     const key = `${file.sha}.${keyData[`${file.sha}.symmetricKey`]}`;
     const response = await fetch(`${LOCAL_SERVER}/download`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key }) });
     if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
-    const zip = new Uint8Array(await response.arrayBuffer()); const entries = fflate.unzipSync(zip); const names = Object.keys(entries).filter((name) => !name.endsWith("/"));
+    const zip = await readDownloadResponse(response, (percent) => { els.downloadBar.style.width = percent + "%"; }); const entries = fflate.unzipSync(zip); const names = Object.keys(entries).filter((name) => !name.endsWith("/"));
     if (dirHandle) await saveFolder(dirHandle, entries);
     else if (file.kind === "file" && names.length === 1) await saveBytes(entries[names[0]], names[0].split("/").pop());
     else await saveBytes(zip, file.name.replace(/\/$/, "") + ".zip");
-    playSound("download"); setStatus(`Downloaded ${file.name} ✓`, "ok");
+    els.downloadBar.style.width = "100%"; playSound("download"); setStatus(`Downloaded ${file.name} ✓`, "ok");
   } catch (error) { if (error.name !== "AbortError") setStatus("Download failed: " + error.message, "err"); }
-  finally { button.disabled = false; button.textContent = "Download"; }
+  finally { button.disabled = false; button.textContent = "Download"; setTimeout(() => { els.downloadProgress.style.display = "none"; }, 1200); }
 }
 
 els.drop.addEventListener("click", () => els.file.click());
@@ -179,12 +293,13 @@ els.drop.addEventListener("drop", async (event) => {
   if (items[0]?.webkitGetAsEntry) { const records = (await Promise.all(items.map((item) => item.webkitGetAsEntry()).filter(Boolean).map((entry) => readEntry(entry, "")))).flat(); if (records.length === 1 && !records[0].path.includes("/")) setFileSelection(records[0].file); else if (records.length) { selection = { kind: "folder", name: records[0].path.split("/")[0], files: records }; prepareSelection(); } }
   else if (event.dataTransfer.files.length) { const files = [...event.dataTransfer.files]; if (files.length === 1) setFileSelection(files[0]); else { selection = { kind: "multiplefiles", name: "overshare-bundle", files: files.map((file) => ({ file, path: file.name })) }; prepareSelection(); } }
 });
-els.keyCopy.addEventListener("click", async () => { if (els.key.value) { await navigator.clipboard.writeText(els.key.value); setStatus("File token copied to clipboard.", "ok"); } });
+els.keyCopy.addEventListener("click", async () => { if (payload?.symmetricKey) { await navigator.clipboard.writeText(`${payload.sha}.${payload.symmetricKey}`); setStatus("File token copied to clipboard.", "ok"); } else setStatus("Select a file first.", "info"); });
 els.loadToken.addEventListener("click", async () => {
   const value = els.downloadToken.value.trim();
   const match = value.match(/^([a-f0-9]{64})\.([A-Za-z0-9_-]+)$/i);
   if (!match) { setStatus("Enter a valid SHA.symmetricKey file token.", "err"); return; }
   await chrome.storage.local.set({ [`${match[1]}.symmetricKey`]: match[2], lastFileToken: value });
+  els.downloadToken.value = "";
   setStatus("File token loaded.", "ok");
   refreshFiles();
 });
@@ -214,13 +329,52 @@ els.importFile.addEventListener("change", async (event) => {
   } catch (error) { setStatus("Import failed: " + error.message, "err"); }
   event.target.value = "";
 });
+els.deleteStorage.addEventListener("click", async () => {
+  const tokens = await storedKeys();
+  if (!tokens.length) { setStatus("No stored file tokens to delete.", "info"); return; }
+  if (!confirm(`Delete ${tokens.length} file token(s) and their Discord files? This cannot be undone.`)) return;
+  els.deleteStorage.disabled = true;
+  try {
+    const response = await fetch(`${LOCAL_SERVER}/delete`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keys: tokens }) });
+    if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+    const data = await chrome.storage.local.get(null);
+    const removals = Object.keys(data).filter((name) => name.endsWith(".symmetricKey") || name === "lastFileToken" || name === "lastKey");
+    await chrome.storage.local.remove(removals);
+    els.downloadToken.value = ""; els.fileList.innerHTML = '<div class="empty">No stored file tokens.</div>';
+    setStatus(`Deleted ${data.deleted ?? tokens.length} Discord file message(s) and local token(s).`, "ok");
+  } catch (error) { setStatus("Delete failed: " + error.message, "err"); }
+  finally { els.deleteStorage.disabled = false; }
+});
 els.mute.addEventListener("click", () => {
   muted = !muted;
   els.mute.textContent = muted ? "🔇" : "🔊";
   chrome.storage.local.set({ muted });
   if (!muted) playSound("click");
 });
-els.send.addEventListener("click", async () => { if (!payload) return; els.send.disabled = true; els.send.textContent = "Sending…"; els.progress.style.display = "block"; const total = Math.max(1, Math.ceil(payload.bytes.length / CHUNK_BYTES)); const metadata = { sha: payload.sha, name: payload.name, kind: payload.kind, originalSize: payload.originalSize, encryptedSize: payload.bytes.length, total }; try { const response = await fetch(`${LOCAL_SERVER}/upload`, { method: "POST", headers: { "Content-Type": "application/octet-stream", "X-OverShare-Metadata": JSON.stringify(metadata) }, body: payload.bytes }); if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`); await chrome.storage.local.set({ [`${payload.sha}.symmetricKey`]: payload.symmetricKey, lastFileToken: `${payload.sha}.${payload.symmetricKey}` }); els.bar.style.width = "100%"; playSound("send"); setStatus(`Sent ${payload.name}: ${total} chunk(s) ✓`, "ok"); } catch (error) { setStatus("Send failed: " + error.message, "err"); } finally { els.send.disabled = false; els.send.textContent = "Send encrypted file"; } });
+els.send.addEventListener("click", async () => {
+  if (activeUpload) {
+    activeUpload.canceling = true;
+    refreshSendState();
+    try {
+      if (activeUpload.jobId) await fetch(`${LOCAL_SERVER}/upload/cancel/${activeUpload.jobId}`, { method: "POST" });
+      else transferChannel.postMessage({ type: "cancelUpload" });
+    }
+    catch (error) { setStatus("Cancel failed: " + error.message, "err"); activeUpload.canceling = false; refreshSendState(); }
+    return;
+  }
+  if (!payload || preparing) return;
+  els.send.disabled = true; els.send.textContent = "Starting…"; els.progress.style.display = "block"; els.bar.style.width = "0%";
+  const total = Math.max(1, Math.ceil(payload.bytes.length / CHUNK_BYTES));
+  const metadata = { sha: payload.sha, name: payload.name, kind: payload.kind, originalSize: payload.originalSize, encryptedSize: payload.bytes.length, total };
+  try {
+    transferChannel.postMessage({ type: "startUpload", job: { metadata, symmetricKey: payload.symmetricKey, bytes: payload.bytes.buffer } }, [payload.bytes.buffer]);
+    activeUpload = { name: payload.name, sha: payload.sha, total, sent: 0 };
+    refreshSendState();
+  } catch (error) { setStatus("Send failed: " + error.message, "err"); refreshSendState(); }
+});
 els.tabSend.addEventListener("click", () => showTab(false)); els.tabDownload.addEventListener("click", () => showTab(true));
-chrome.storage.local.get(["lastFileToken", "lastKey", "muted"], (data) => { if (data.lastFileToken || data.lastKey) { els.key.value = data.lastFileToken || data.lastKey; els.downloadToken.value = data.lastFileToken || data.lastKey; } muted = !!data.muted; els.mute.textContent = muted ? "🔇" : "🔊"; refreshSendState(); });
+const transferChannel = new BroadcastChannel("overshare");
+transferChannel.onmessage = (event) => { if (event.data?.type === "uploadState") applyUploadState(event.data.send); };
+chrome.runtime.sendMessage({ target: "background", type: "ensureEngine" }).then(() => transferChannel.postMessage({ type: "hello" })).catch(() => {});
+chrome.storage.local.get(["activeUpload", "lastFileToken", "lastKey", "muted"], (data) => { if (data.lastFileToken || data.lastKey) els.downloadToken.value = data.lastFileToken || data.lastKey; muted = !!data.muted; els.mute.textContent = muted ? "🔇" : "🔊"; if (data.activeUpload) monitorStoredUpload(data.activeUpload); else refreshSendState(); });
 checkServer();
