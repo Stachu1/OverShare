@@ -128,6 +128,13 @@
     }
     button.send:hover:not(:disabled) { background: var(--accent-hover); }
     button.send:disabled { opacity: 0.5; cursor: not-allowed; }
+    /* While sending, the Send button becomes a red Cancel */
+    button.send.cancel { background: var(--err); }
+    button.send.cancel:hover:not(:disabled) { background: #c93b3e; }
+
+    /* Controls locked during a send */
+    input:disabled, textarea:disabled, select:disabled, button.mini:disabled { opacity: 0.5; cursor: not-allowed; }
+    .drop.locked { opacity: 0.5; pointer-events: none; }
 
     .progress { height: 6px; background: var(--panel-2); border-radius: 4px; overflow: hidden; display: none; }
     .progress .bar { height: 100%; width: 0%; background: var(--accent); transition: width 0.2s; }
@@ -223,12 +230,14 @@
     <section class="panel" id="downloadPanel">
       <div id="loadOlderWrap"></div>
       <div class="list" id="fileList"><div class="empty">Files from this channel will appear here.</div></div>
+      <div class="progress" id="dlProgress"><div class="bar" id="dlBar"></div></div>
     </section>
 
     <div class="status info" id="status"></div>
   </main>
 
   <script src="fflate.js"></script>
+  <script src="shared.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

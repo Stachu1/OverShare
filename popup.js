@@ -1,6 +1,5 @@
 "use strict";
 
-const API = "https://discord.com/api/v10";
 const MAX_ATTACHMENTS = 10; // Discord's hard cap per message
 
 const els = {
@@ -28,6 +27,8 @@ const els = {
   progress: document.getElementById("progress"),
   bar: document.getElementById("bar"),
   // download
+  dlProgress: document.getElementById("dlProgress"),
+  dlBar: document.getElementById("dlBar"),
   fileList: document.getElementById("fileList"),
   loadOlderWrap: document.getElementById("loadOlderWrap"),
   // shared
@@ -79,17 +80,10 @@ els.chunk.addEventListener("change", () => chrome.storage.local.set({ chunkMB: e
 els.maxmsg.addEventListener("change", () => chrome.storage.local.set({ filesPerMsg: els.maxmsg.value.trim() }));
 
 // --- Helpers ---
-function humanSize(bytes) {
-  const units = ["B", "KB", "MB", "GB"];
-  let n = bytes, i = 0;
-  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
-  return `${n.toFixed(n < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
-}
 function setStatus(msg, kind = "info") {
   els.status.textContent = msg;
   els.status.className = `status ${kind}`;
 }
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // --- Token validity indicator ---
 function setTokenStatus(state) {
@@ -266,6 +260,7 @@ function updateChunkInfo() {
     `${per} chunk${per === 1 ? "" : "s"} | ${messages} message${messages === 1 ? "" : "s"}`;
 }
 function refreshSendState() {
+  if (isSending()) return; // the button is "Cancel" while a send runs
   els.send.disabled = !(payload && !zipping && els.token.value.trim() && els.channel.value.trim());
 }
 
@@ -296,11 +291,6 @@ async function readBytes(file) { return new Uint8Array(await file.arrayBuffer())
 // Fixed zip timestamp → deterministic archives. ZIP's DOS date only allows
 // 1980–2107, so epoch 0 (1970) throws "date not in range"; use a fixed 1985 date.
 const ZIP_MTIME = new Date(Date.UTC(1985, 0, 1));
-async function sha256hex(bytes) {
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 // Recursively read a dropped directory entry into {file, path} records.
 function readEntry(entry, prefix) {
   return new Promise((resolve) => {
@@ -381,14 +371,15 @@ async function prepareSelection() {
   }
 }
 
-els.drop.addEventListener("click", () => els.file.click());
+els.drop.addEventListener("click", () => { if (!isSending()) els.file.click(); });
 els.file.addEventListener("change", (e) => setFileSelection(e.target.files[0]));
-els.folderBtn.addEventListener("click", () => els.folder.click());
+els.folderBtn.addEventListener("click", () => { if (!isSending()) els.folder.click(); });
 els.folder.addEventListener("change", (e) => setFolderSelection(e.target.files));
-els.drop.addEventListener("dragover", (e) => { e.preventDefault(); els.drop.classList.add("drag"); });
+els.drop.addEventListener("dragover", (e) => { e.preventDefault(); if (!isSending()) els.drop.classList.add("drag"); });
 els.drop.addEventListener("dragleave", () => els.drop.classList.remove("drag"));
 els.drop.addEventListener("drop", async (e) => {
   e.preventDefault(); els.drop.classList.remove("drag");
+  if (isSending()) return;
   const items = e.dataTransfer.items;
   if (items && items.length && items[0].webkitGetAsEntry) {
     const entries = [...items].map((it) => it.webkitGetAsEntry()).filter(Boolean);
@@ -459,148 +450,118 @@ async function detectFromTab(auto = false) {
   }
 }
 
-// ============================ SEND ============================
+// ============================ ENGINE ============================
+// Sends and downloads run in engine.js (an offscreen document kept alive by
+// background.js), so they continue after this popup closes. We hand it jobs and
+// render the state it pushes back.
 
-// POST one message carrying one or more attachments (blobs[]/names[]).
-// XHR (not fetch) so we get real upload-progress; rejections carry .status/.retryAfter.
-function uploadBundle(token, channelId, blobs, names, note, onProgress) {
-  return new Promise((resolve, reject) => {
-    const form = new FormData();
-    form.append("payload_json", JSON.stringify({ content: note || "" }));
-    blobs.forEach((blob, i) => form.append(`files[${i}]`, blob, names[i]));
+const engine = new BroadcastChannel(ENGINE_CHANNEL);
+let engineState = { send: null, download: null, status: null };
+let lastStatusSeq = 0;
+let progressHideTimer = null;
 
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${API}/channels/${channelId}/messages`);
-    xhr.setRequestHeader("Authorization", token);
-    xhr.upload.addEventListener("progress", (e) => { if (e.lengthComputable && onProgress) onProgress(e.loaded); });
-    xhr.addEventListener("load", () => {
-      if (xhr.status >= 200 && xhr.status < 300) return resolve();
-      let body = {};
-      try { body = JSON.parse(xhr.responseText); } catch (_) {}
-      const err = new Error(`HTTP ${xhr.status}${body.message ? " — " + body.message : ""}`);
-      err.status = xhr.status;
-      if (xhr.status === 429) {
-        err.retryAfter = body.retry_after != null ? Number(body.retry_after)
-          : Number(xhr.getResponseHeader("retry-after")) || 1;
-      }
-      reject(err);
-    });
-    xhr.addEventListener("error", () => reject(new Error("Network error")));
-    xhr.send(form);
-  });
-}
-async function sendWithRetry(token, channelId, blobs, names, note, onProgress) {
-  for (;;) {
-    try { return await uploadBundle(token, channelId, blobs, names, note, onProgress); }
-    catch (e) {
-      if (e.status === 429 && e.retryAfter != null) {
-        setStatus(`Rate limited — waiting ${e.retryAfter.toFixed(1)}s…`, "info");
-        await sleep((e.retryAfter + 0.5) * 1000);
-        continue;
-      }
-      throw e;
-    }
+function isSending() { return !!(engineState.send && engineState.send.active); }
+function isDownloading() { return !!(engineState.download && engineState.download.active); }
+
+// Lock everything that could start a second send or change the running one.
+function setSendLock(locked) {
+  for (const el of [els.token, els.channel, els.knownChannels, els.folderBtn, els.chunk, els.maxmsg, els.note]) {
+    el.disabled = locked;
+  }
+  els.drop.classList.toggle("locked", locked);
+  els.send.classList.toggle("cancel", locked);
+  if (locked) {
+    els.send.textContent = "Cancel";
+    els.send.disabled = false;
+  } else {
+    els.send.textContent = "Send file";
+    refreshSendState();
   }
 }
 
-// The transfer's first message: a human line + a machine-readable manifest.
-const MANIFEST_MARKER = "OVERSHARE|";
-function buildManifestContent(manifest, note) {
-  const human =
-    `📦 OverShare: ${manifest.name}${manifest.kind === "folder" ? "/ (folder)" : ""}\n` +
-    `${humanSize(manifest.originalSize)} → ${humanSize(manifest.zippedSize)} zipped · ${manifest.total} chunk(s)\n` +
-    `SHA-256 ${manifest.sha256}`;
-  const body = note ? `${human}\n\n${note}` : human;
-  // Wrap in a spoiler + code block. The manifest JSON is the last line, so the
-  // closing "```||" sits on its own line and never touches the JSON.
-  return "||```text\n" + body + `\n${MANIFEST_MARKER}${JSON.stringify(manifest)}\n` + "```||";
+function applyEngineState(s) {
+  const prev = engineState;
+  engineState = s;
+  const sending = isSending();
+
+  // --- Send ---
+  setSendLock(sending);
+  if (sending) {
+    clearTimeout(progressHideTimer);
+    els.progress.style.display = "block";
+    els.bar.style.width = s.send.percent + "%";
+    if (!payload) { // popup reopened mid-send: show what's going out
+      els.drop.classList.add("has-file");
+      els.dropLabel.innerHTML = `<div class="name">${escapeHtml(s.send.name)}</div><div class="size">Sending…</div>`;
+    }
+  } else if (prev.send && prev.send.active) {
+    if (s.send.outcome === "ok") els.bar.style.width = "100%";
+    progressHideTimer = setTimeout(() => { els.progress.style.display = "none"; }, 1200);
+    if (!payload) {
+      els.dropLabel.textContent = "Click for a file, or drop a file / folder";
+      els.drop.classList.remove("has-file");
+    }
+    if (s.send.outcome === "ok") sfx.send();
+  }
+
+  // --- Download ---
+  const downloading = isDownloading();
+  els.dlProgress.style.display = downloading ? "block" : "none";
+  if (downloading) els.dlBar.style.width = s.download.percent + "%";
+  for (const btn of els.fileList.querySelectorAll("button[data-id]")) {
+    const mine = downloading && btn.dataset.id === s.download.id;
+    btn.disabled = downloading || btn.dataset.complete !== "1";
+    btn.textContent = mine ? s.download.percent + "%" : "Download";
+  }
+  if (!downloading && prev.download && prev.download.active && s.download.outcome === "ok") sfx.download();
+
+  // --- Status line ---
+  if (s.status && s.status.seq !== lastStatusSeq) {
+    lastStatusSeq = s.status.seq;
+    setStatus(s.status.msg, s.status.kind);
+  }
 }
 
-els.send.addEventListener("click", async () => {
+engine.onmessage = (e) => {
+  if (e.data && e.data.type === "state") applyEngineState(e.data.state);
+};
+// Make sure the engine exists, then ask it for the current state.
+(async () => {
+  try { await chrome.runtime.sendMessage({ target: "background", type: "ensureEngine" }); } catch (_) {}
+  engine.postMessage({ type: "hello" });
+})();
+
+els.send.addEventListener("click", () => {
+  if (isSending()) {
+    engine.postMessage({ type: "cancelSend" });
+    els.send.disabled = true; // until the engine confirms
+    setStatus("Canceling…", "info");
+    return;
+  }
   const token = els.token.value.trim();
   const channelId = els.channel.value.trim();
-  const note = els.note.value.trim();
   if (!payload || zipping || !token || !channelId) return;
-
-  const bytes = payload.bytes;
-  const dataBlob = new Blob([bytes]);
-  const base = payload.base;
-  const { chunkBytes, total, perMsg } = chunkPlan(payload.zippedSize);
-
-  // Per-message plan of chunk blobs/names (chunks named "<base>.<i>_<total>").
-  const plan = [];
-  let gi = 0;
-  while (gi < total) {
-    const blobs = [], names = [];
-    for (let k = 0; k < perMsg && gi < total; k++, gi++) {
-      const start = gi * chunkBytes;
-      const end = Math.min(bytes.length, start + chunkBytes);
-      blobs.push(dataBlob.slice(start, end));
-      names.push(`${base}.${gi + 1}_${total}`);
-    }
-    plan.push({ blobs, names });
-  }
-
-  const manifest = {
-    v: 1, kind: payload.kind, name: payload.name, base, total,
-    originalSize: payload.originalSize, zippedSize: payload.zippedSize,
-    sha256: payload.sha256, entries: payload.entries,
-  };
-
-  els.send.disabled = true;
-  els.progress.style.display = "block";
-  els.bar.style.width = "0%";
-
-  try {
-    // 1) Manifest message first (also carries the optional note).
-    setStatus("Sending manifest…", "info");
-    await sendWithRetry(token, channelId, [], [], buildManifestContent(manifest, note), null);
-
-    // 2) Chunk messages.
-    let sent = 0;
-    for (let m = 0; m < plan.length; m++) {
-      const { blobs, names } = plan[m];
-      const bundleBytes = blobs.reduce((a, b) => a + b.size, 0);
-      await sendWithRetry(token, channelId, blobs, names, "", (loaded) => {
-        const overall = sent + loaded;
-        els.bar.style.width = Math.round((overall / bytes.length) * 100) + "%";
-        setStatus(`Message ${m + 1}/${plan.length} — ${humanSize(overall)} / ${humanSize(bytes.length)}`, "info");
-      });
-      sent += bundleBytes;
-    }
-    els.bar.style.width = "100%";
-    setStatus(`Sent "${payload.name}" — ${total} chunk(s) in ${plan.length} message(s) ✓`, "ok");
-    sfx.send();
-  } catch (err) {
-    setStatus(err.message, "err");
-  } finally {
-    els.send.disabled = false;
-    setTimeout(() => { els.progress.style.display = "none"; }, 1200);
-  }
+  const { chunkBytes, perMsg } = chunkPlan(payload.zippedSize);
+  engine.postMessage({
+    type: "send",
+    job: {
+      token, channelId, note: els.note.value.trim(),
+      blob: new Blob([payload.bytes]), chunkBytes, perMsg,
+      meta: {
+        kind: payload.kind, name: payload.name, base: payload.base,
+        originalSize: payload.originalSize, zippedSize: payload.zippedSize,
+        sha256: payload.sha256, entries: payload.entries,
+      },
+    },
+  });
+  // Lock right away so a quick second click can't queue another send.
+  applyEngineState({ ...engineState, send: { active: true, name: payload.name, percent: 0, outcome: null } });
 });
 
 // ========================== DOWNLOAD ==========================
 
 // Match a chunk name "<base>.<index>_<total>".
 const CHUNK_RE = /^(.*)\.(\d+)_(\d+)$/;
-
-// Best-effort MIME from the filename extension. Without a type on the blob,
-// Chrome sniffs it as text and appends ".txt" to the saved file.
-const MIME = {
-  mp4: "video/mp4", mkv: "video/x-matroska", mov: "video/quicktime", webm: "video/webm", avi: "video/x-msvideo",
-  mp3: "audio/mpeg", wav: "audio/wav", flac: "audio/flac", ogg: "audio/ogg", m4a: "audio/mp4",
-  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml",
-  pdf: "application/pdf", zip: "application/zip", rar: "application/vnd.rar", "7z": "application/x-7z-compressed",
-  gz: "application/gzip", tar: "application/x-tar", exe: "application/x-msdownload", iso: "application/x-iso9660-image",
-  json: "application/json", txt: "text/plain", csv: "text/csv", md: "text/markdown",
-  doc: "application/msword", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  xls: "application/vnd.ms-excel", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  ppt: "application/vnd.ms-powerpoint", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-};
-function inferMime(name) {
-  const ext = name.includes(".") ? name.split(".").pop().toLowerCase() : "";
-  return MIME[ext] || "application/octet-stream";
-}
 
 const PAGE = 20; // read in batches of 20, paging with ?before=<oldest id>
 
@@ -685,76 +646,6 @@ function addMessages(messages) {
   moreAvailable = messages.length === PAGE;
 }
 
-// Save a single file's bytes via the downloads API.
-async function saveBytes(bytes, filename) {
-  const blob = new Blob([bytes], { type: inferMime(filename) });
-  const url = URL.createObjectURL(blob);
-  await chrome.downloads.download({ url, filename, saveAs: true });
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
-}
-
-// Write unzipped entries into a chosen directory, recreating subfolders.
-async function saveFolderToDisk(dirHandle, files, names) {
-  for (const name of names) {
-    const segs = name.split("/");
-    const fileSeg = segs.pop();
-    let cur = dirHandle;
-    for (const seg of segs) if (seg) cur = await cur.getDirectoryHandle(seg, { create: true });
-    const fh = await cur.getFileHandle(fileSeg, { create: true });
-    const w = await fh.createWritable();
-    await w.write(files[name]);
-    await w.close();
-  }
-}
-
-// Fetch every chunk, reassemble, verify the SHA, then unzip and save.
-async function reassemble(group, dirHandle) {
-  const chunks = [];
-  let totalLen = 0;
-  for (let i = 1; i <= group.total; i++) {
-    const p = group.parts.get(i);
-    if (!p) throw new Error(`Missing chunk ${i}/${group.total}`);
-    setStatus(`Downloading "${displayName(group)}" — part ${i}/${group.total}…`, "info");
-    const res = await fetch(p.url);
-    if (!res.ok) throw new Error(`Part ${i}: HTTP ${res.status}`);
-    const buf = new Uint8Array(await res.arrayBuffer());
-    chunks.push(buf); totalLen += buf.length;
-  }
-  const bytes = new Uint8Array(totalLen);
-  let off = 0;
-  for (const c of chunks) { bytes.set(c, off); off += c.length; }
-
-  // Integrity check against the manifest SHA-256.
-  let verified = null;
-  if (group.manifest && group.manifest.sha256) {
-    setStatus(`Verifying "${displayName(group)}"…`, "info");
-    verified = (await sha256hex(bytes)) === group.manifest.sha256;
-    if (!verified) throw new Error(`Integrity check failed for "${displayName(group)}" (SHA mismatch).`);
-  }
-
-  const isZip = bytes.length > 3 && bytes[0] === 0x50 && bytes[1] === 0x4B; // "PK"
-  if (isZip) {
-    let files;
-    try { files = fflate.unzipSync(bytes); }
-    catch (e) { throw new Error("Unzip failed: " + e.message); }
-    const names = Object.keys(files).filter((n) => !n.endsWith("/"));
-    if (!names.length) throw new Error("Archive is empty.");
-    if (dirHandle) {
-      await saveFolderToDisk(dirHandle, files, names); // extract into chosen folder
-    } else if (names.length === 1) {
-      await saveBytes(files[names[0]], names[0].split("/").pop()); // single file
-    } else {
-      // Multi-file archive with no folder destination — hand back the .zip.
-      await saveBytes(bytes, displayName(group).replace(/\/$/, "") + ".zip");
-    }
-  } else {
-    await saveBytes(bytes, displayName(group)); // legacy / non-zip payloads
-  }
-
-  setStatus(`Saved "${displayName(group)}"${verified === true ? " · 🔒 SHA verified" : ""} ✓`, "ok");
-  sfx.download();
-}
-
 const VISIBLE_ROWS = 4; // show this many files before the list scrolls
 
 // Cap the list to VISIBLE_ROWS items so it cuts cleanly (measured, so it holds
@@ -809,21 +700,29 @@ function renderList() {
 
     const btn = document.createElement("button");
     btn.textContent = "Download";
-    btn.disabled = !complete;
+    btn.dataset.id = g.id;
+    btn.dataset.complete = complete ? "1" : "";
+    btn.disabled = !complete || isDownloading();
     btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      try {
-        // A folder must ask for a destination while we still have the click's
-        // user activation (before the network awaits consume it).
-        let dirHandle = null;
-        if (g.manifest && g.manifest.kind === "folder" && window.showDirectoryPicker) {
-          dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+      if (isDownloading()) return;
+      // A folder asks for its destination here, while we still have the click's
+      // user activation; the engine then writes into it.
+      let dirHandle = null;
+      if (g.manifest && g.manifest.kind === "folder" && window.showDirectoryPicker) {
+        try { dirHandle = await window.showDirectoryPicker({ mode: "readwrite" }); }
+        catch (err) {
+          if (err && err.name === "AbortError") setStatus("Canceled.", "info");
+          else setStatus(err.message || String(err), "err");
+          return;
         }
-        await reassemble(g, dirHandle);
-      } catch (err) {
-        if (err && err.name === "AbortError") setStatus("Canceled.", "info");
-        else setStatus(err.message || String(err), "err");
-      } finally { btn.disabled = false; }
+      }
+      const parts = [];
+      for (let i = 1; i <= g.total; i++) parts.push(g.parts.get(i));
+      engine.postMessage({
+        type: "download",
+        job: { id: g.id, name: displayName(g), manifest: g.manifest, parts, dirHandle },
+      });
+      applyEngineState({ ...engineState, download: { active: true, id: g.id, name: displayName(g), percent: 0, outcome: null } });
     });
 
     item.appendChild(meta);

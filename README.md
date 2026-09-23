@@ -18,8 +18,21 @@ immediately (with a fixed mtime, so identical content yields an identical
 archive/hash) and the popup shows `original → zipped` size.
 
 **Chunk size (MB)** (default 20) slices the zip into `ceil(zipSize / chunkSize)`
-parts named `<name>.zip.<i>_<total>` (1-based) — e.g. `movie.mp4.zip.1_3`. Rate
-limits (HTTP 429) are waited out and retried automatically.
+parts named `<name>.zip.<i>_<total>` (1-based) — e.g. `movie.mp4.zip.1_3`.
+
+While a send runs, the other controls are locked and the button turns into a red
+**Cancel**. Canceling stops at once; anything already posted shows up in the
+Download tab as an incomplete transfer.
+
+### Retries
+
+Every upload and chunk download is retried on its own:
+
+- **Rate limits (429)** wait as long as Discord asks, then retry (not counted as
+  failures).
+- **Network errors, timeouts and server errors (5xx)** retry up to 5 times,
+  waiting 1, 2, 4, 8, 16 s.
+- **Other errors** (bad token, no access, 413 too large…) fail immediately.
 
 ### Integrity manifest
 
@@ -39,7 +52,7 @@ readout under Chunk size shows `N chunks × M messages` (`x` until a file is
 loaded).
 
 Bundling can't beat the size cap — a genuinely large file still spans multiple
-messages. If a message 413s, lower the chunk size or the per-message budget.
+messages. If a message 413s, lower the chunk size.
 Reassembly doesn't care how chunks were packed; it groups by filename.
 
 ## Download tab
@@ -61,7 +74,18 @@ not downloadable. **Load older files** at the top pages further back.
   API), recreating subfolders; if that API is unavailable it falls back to saving
   the `.zip`.
 
-Plain, non-chunked attachments are still listed as single-part files.
+A progress bar under the list (and a percentage on the item's button) tracks the
+download. One download runs at a time.
+
+## Background engine
+
+Sending and downloading run in a hidden **offscreen document** (`offscreen.html`
++ `engine.js`), created and kept alive by the service worker (`background.js`).
+So **transfers keep going after the popup closes**; reopening it picks up the live
+progress. The popup hands jobs to the engine over a `BroadcastChannel` (which can
+carry the zipped Blob and a picked folder handle) and renders the state it pushes
+back. Offscreen documents can't call `chrome.downloads`, so the engine asks the
+service worker to save files.
 
 ## How sending works
 
@@ -128,16 +152,17 @@ silent (browsers resume audio only after a user gesture).
 
 Uses [`fflate`](https://github.com/101arrowz/fflate) (bundled as `fflate.js`).
 The **synchronous** API is used to stay clear of any MV3 worker/CSP issues, so
-zipping/unzipping happens on the popup thread.
+zipping happens on the popup thread (when you pick a file) and unzipping in the
+engine.
 
 ## Known limits
 
 - **Everything is in-memory** — zipping reads all selected files into memory, and
   reassembly/unzip holds the archive and its contents at once. Fine for normal
   sizes; multi-GB transfers can strain memory and briefly freeze the popup during
-  (un)zip. Streaming (via a background service worker) would fix this.
-- **Keep the popup open** until a download/extraction finishes — the work runs in
-  the popup, and closing it mid-save can truncate the result.
+  (un)zip. Streaming would fix this.
+- **Folder downloads** write into the folder picked in the popup. If Chrome
+  doesn't let the engine use that folder, the `.zip` is saved instead.
 - **Folder extraction** needs the File System Access API (Chromium) and asks you
   to pick a destination folder. Without it, the folder's `.zip` is saved instead.
 - The list starts with the most recent **20 messages**; use **Load older files**
