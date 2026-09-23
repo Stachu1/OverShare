@@ -48,11 +48,11 @@ let payload = null;   // { kind, name, base, bytes:Uint8Array, sha256, originalS
 let zipping = false;
 
 // --- Restore/persist settings ---
-chrome.storage.local.get(["token", "channel", "chunkMB", "maxMsgMB", "muted", "channelName", "knownChannels"], (data) => {
+chrome.storage.local.get(["token", "channel", "chunkMB", "filesPerMsg", "muted", "channelName", "knownChannels"], (data) => {
   if (data.token) els.token.value = data.token;
   if (data.channel) els.channel.value = data.channel;
   if (data.chunkMB) els.chunk.value = data.chunkMB;
-  if (data.maxMsgMB) els.maxmsg.value = data.maxMsgMB;
+  if (data.filesPerMsg) els.maxmsg.value = data.filesPerMsg;
   if (data.channelName) setChannelName(data.channelName); // instant, refreshed below
   knownChannels = Array.isArray(data.knownChannels) ? data.knownChannels : [];
   populateKnownSelect();
@@ -76,7 +76,7 @@ els.channel.addEventListener("change", () => {
   validateToken();
 });
 els.chunk.addEventListener("change", () => chrome.storage.local.set({ chunkMB: els.chunk.value.trim() }));
-els.maxmsg.addEventListener("change", () => chrome.storage.local.set({ maxMsgMB: els.maxmsg.value.trim() }));
+els.maxmsg.addEventListener("change", () => chrome.storage.local.set({ filesPerMsg: els.maxmsg.value.trim() }));
 
 // --- Helpers ---
 function humanSize(bytes) {
@@ -249,12 +249,11 @@ document.addEventListener("click", (e) => {
 
 // Split math + message packing, shared by the readout and the sender.
 function chunkPlan(fileSize) {
-  const chunkMB = parseFloat(els.chunk.value) || 8;
-  const maxMsgMB = parseFloat(els.maxmsg.value) || chunkMB;
+  const chunkMB = parseFloat(els.chunk.value) || 20;
+  const filesPerMsg = parseInt(els.maxmsg.value, 10) || MAX_ATTACHMENTS;
   const chunkBytes = Math.max(1, Math.floor(chunkMB * 1024 * 1024));
-  const maxMsgBytes = Math.max(chunkBytes, Math.floor(maxMsgMB * 1024 * 1024));
   const total = Math.max(1, Math.ceil(fileSize / chunkBytes));
-  const perMsg = Math.max(1, Math.min(MAX_ATTACHMENTS, Math.floor(maxMsgBytes / chunkBytes)));
+  const perMsg = Math.max(1, Math.min(MAX_ATTACHMENTS, filesPerMsg));
   const messages = Math.ceil(total / perMsg);
   return { chunkBytes, total, perMsg, messages };
 }

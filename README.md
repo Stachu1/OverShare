@@ -17,7 +17,7 @@ picker; use the folder button (or drag) for folders. The selection is zipped
 immediately (with a fixed mtime, so identical content yields an identical
 archive/hash) and the popup shows `original → zipped` size.
 
-**Chunk size (MB)** (default 8) slices the zip into `ceil(zipSize / chunkSize)`
+**Chunk size (MB)** (default 20) slices the zip into `ceil(zipSize / chunkSize)`
 parts named `<name>.zip.<i>_<total>` (1-based) — e.g. `movie.mp4.zip.1_3`. Rate
 limits (HTTP 429) are waited out and retried automatically.
 
@@ -33,10 +33,10 @@ handing back a corrupt file.
 
 ### Bundling chunks into fewer messages
 
-Discord allows up to **10 attachments per message**, bounded by a total size
-limit. **Max / message (MB)** (default 40) controls how many chunks are packed
-into one message: `min(10, floor(maxPerMsg / chunkSize))`. So 8 MB chunks with a
-40 MB budget go 5-per-message. The live readout shows `→ N chunks · M messages`.
+Discord allows up to **10 attachments per message**. **Files / message**
+(default 10, max 10) sets how many chunks are packed into one message. The live
+readout under Chunk size shows `N chunks × M messages` (`x` until a file is
+loaded).
 
 Bundling can't beat the size cap — a genuinely large file still spans multiple
 messages. If a message 413s, lower the chunk size or the per-message budget.

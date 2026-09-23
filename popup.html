@@ -204,11 +204,11 @@
       <div class="row">
         <div>
           <label for="chunk">Chunk size (MB)<span id="chunkInfo"></span></label>
-          <input type="number" id="chunk" min="0.001" step="any" value="8" />
+          <input type="number" id="chunk" min="0.001" step="any" value="20" />
         </div>
         <div>
-          <label for="maxmsg">Max / message (MB)</label>
-          <input type="number" id="maxmsg" min="0.001" step="any" value="40" />
+          <label for="maxmsg">Files / message</label>
+          <input type="number" id="maxmsg" min="1" max="10" step="1" value="10" />
         </div>
       </div>
       <div>
