@@ -122,7 +122,7 @@ async function refreshFiles() {
   try {
     const response = await fetch(`${LOCAL_SERVER}/files`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keys: await storedKeys() }) });
     if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
-    const files = result.files || []; renderFiles(files); const complete = files.filter((file) => file.available).length; const incomplete = files.length - complete; setStatus(`${complete} complete, ${incomplete} incomplete file(s).`, incomplete ? "info" : "ok");
+    const result = await response.json(); const files = result.files || []; renderFiles(files); const complete = files.filter((file) => file.available).length; const incomplete = files.length - complete; setStatus(`${complete} complete, ${incomplete} incomplete file(s).`, incomplete ? "info" : "ok");
   } catch (error) { els.fileList.innerHTML = '<div class="empty">Could not search for files.</div>'; setStatus("Search failed: " + error.message, "err"); }
 }
 async function saveBytes(bytes, filename) {
