@@ -82,9 +82,30 @@ function tone(freq, dur, { type = "sine", gain = 0.05, delay = 0 } = {}) {
     osc.stop(t0 + dur + 0.02);
   } catch (_) { /* audio unavailable — stay silent */ }
 }
+// A short filtered noise burst — reads as a real "click", not a beep.
+function noiseBurst(dur, { gain = 0.08, hp = 1800, lp = 8000 } = {}) {
+  try {
+    const ctx = ac();
+    const t0 = ctx.currentTime;
+    const frames = Math.max(1, Math.floor(ctx.sampleRate * dur));
+    const buf = ctx.createBuffer(1, frames, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < frames; i++) data[i] = Math.random() * 2 - 1;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const hpf = ctx.createBiquadFilter(); hpf.type = "highpass"; hpf.frequency.value = hp;
+    const lpf = ctx.createBiquadFilter(); lpf.type = "lowpass"; lpf.frequency.value = lp;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(gain, t0);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    src.connect(hpf).connect(lpf).connect(g).connect(ctx.destination);
+    src.start(t0);
+    src.stop(t0 + dur + 0.01);
+  } catch (_) { /* audio unavailable — stay silent */ }
+}
 const sfx = {
-  hover: () => tone(1400, 0.04, { type: "sine", gain: 0.02 }),
-  click: () => tone(600, 0.06, { type: "triangle", gain: 0.06 }),
+  hover: () => tone(1200, 0.02, { type: "sine", gain: 0.008 }), // barely-there tick
+  click: () => noiseBurst(0.022, { gain: 0.12, hp: 2200, lp: 9000 }), // crisp snap
   // ascending chime on a successful send
   send: () => { tone(523, 0.12, { gain: 0.05 }); tone(659, 0.12, { gain: 0.05, delay: 0.1 }); tone(784, 0.16, { gain: 0.05, delay: 0.2 }); },
   // gentle two-note "arrived" cue on a completed download
