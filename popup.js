@@ -59,6 +59,47 @@ function setStatus(msg, kind = "info") {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// --- Sound effects (synthesized, no asset files) ---
+let audioCtx = null;
+function ac() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === "suspended") audioCtx.resume();
+  return audioCtx;
+}
+function tone(freq, dur, { type = "sine", gain = 0.05, delay = 0 } = {}) {
+  try {
+    const ctx = ac();
+    const t0 = ctx.currentTime + delay;
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = type;
+    osc.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.linearRampToValueAtTime(gain, t0 + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(g).connect(ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+  } catch (_) { /* audio unavailable — stay silent */ }
+}
+const sfx = {
+  hover: () => tone(1400, 0.04, { type: "sine", gain: 0.02 }),
+  click: () => tone(600, 0.06, { type: "triangle", gain: 0.06 }),
+  // ascending chime on a successful send
+  send: () => { tone(523, 0.12, { gain: 0.05 }); tone(659, 0.12, { gain: 0.05, delay: 0.1 }); tone(784, 0.16, { gain: 0.05, delay: 0.2 }); },
+  // gentle two-note "arrived" cue on a completed download
+  download: () => { tone(784, 0.12, { gain: 0.05 }); tone(523, 0.18, { gain: 0.05, delay: 0.12 }); },
+};
+
+// Delegated so it covers the dynamically-created Download buttons too.
+let lastHover = null;
+document.addEventListener("mouseover", (e) => {
+  const b = e.target.closest("button");
+  if (b && b !== lastHover) { lastHover = b; sfx.hover(); }
+  else if (!b) { lastHover = null; }
+});
+document.addEventListener("click", (e) => { if (e.target.closest("button")) sfx.click(); }, true);
+
 // Split math + message packing, shared by the readout and the sender.
 function chunkPlan(fileSize) {
   const chunkMB = parseFloat(els.chunk.value) || 8;
@@ -97,6 +138,7 @@ function showTab(which) {
   els.tabDownload.classList.toggle("active", !send);
   els.sendPanel.classList.toggle("active", send);
   els.downloadPanel.classList.toggle("active", !send);
+  if (!send) refreshList(true); // auto-load the list when entering Download
 }
 els.tabSend.addEventListener("click", () => showTab("send"));
 els.tabDownload.addEventListener("click", () => showTab("download"));
@@ -250,6 +292,7 @@ els.send.addEventListener("click", async () => {
         : `Sent "${file.name}" — ${total} chunks in ${plan.length} message(s) ✓`,
       "ok"
     );
+    sfx.send();
   } catch (err) {
     setStatus(err.message, "err");
   } finally {
@@ -333,6 +376,7 @@ async function reassemble(group) {
   await chrome.downloads.download({ url, filename: group.name, saveAs: true });
   setTimeout(() => URL.revokeObjectURL(url), 60000);
   setStatus(`Saved "${group.name}" (${humanSize(blob.size)}) ✓`, "ok");
+  sfx.download();
 }
 
 function renderList(groups) {
@@ -383,10 +427,17 @@ function renderList(groups) {
   }
 }
 
-els.refresh.addEventListener("click", async () => {
+let listLoading = false;
+// `auto` = triggered by switching tabs (stay quiet if creds aren't set yet).
+async function refreshList(auto = false) {
   const token = els.token.value.trim();
   const channelId = els.channel.value.trim();
-  if (!token || !channelId) { setStatus("Need token + channel first (use Detect).", "err"); return; }
+  if (!token || !channelId) {
+    if (!auto) setStatus("Need token + channel first (use Detect).", "err");
+    return;
+  }
+  if (listLoading) return;
+  listLoading = true;
   setStatus("Loading recent files…", "info");
   els.refresh.disabled = true;
   try {
@@ -397,5 +448,7 @@ els.refresh.addEventListener("click", async () => {
     setStatus("Failed to load: " + err.message, "err");
   } finally {
     els.refresh.disabled = false;
+    listLoading = false;
   }
-});
+}
+els.refresh.addEventListener("click", () => refreshList(false));

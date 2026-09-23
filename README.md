@@ -35,7 +35,8 @@ Reassembly doesn't care how chunks were packed; it groups by filename.
 
 ## Download tab
 
-**Refresh** reads the last 100 messages of the channel via
+Switching to this tab **auto-loads** the list (silently if token/channel aren't
+set yet). **Refresh** reads the last 100 messages of the channel via
 `GET /channels/<id>/messages`, groups attachments by the `<i>_<total>` naming,
 and lists each file with its chunk count / size (incomplete sets are flagged and
 not downloadable). **Download** fetches every part from Discord's CDN in order,
@@ -87,6 +88,13 @@ throwaway same-origin `<iframe>` — localStorage is shared per origin, and Disc
 only deletes it on the top window — reads `token`, then removes the iframe. The
 token is used only to call Discord from your browser; it is never sent anywhere
 else.
+
+## Sound effects
+
+Synthesized on the fly with the Web Audio API (no audio files bundled): a hover
+tick and click blip on buttons, an ascending chime on a successful send, and a
+two-note cue when a download finishes. The very first hover before any click may
+be silent (browsers resume audio only after a user gesture).
 
 ## Known limits
 
