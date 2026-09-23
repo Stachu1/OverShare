@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Discord Big Files",
+  "version": "0.5.1",
+  "description": "Send and receive large files on Discord (channels or DMs) by auto-splitting them into chunks and reassembling on download.",
+  "action": {
+    "default_title": "Discord Big Files",
+    "default_popup": "popup.html"
+  },
+  "permissions": ["storage", "scripting", "activeTab", "downloads"],
+  "host_permissions": [
+    "https://discord.com/*",
+    "https://discordapp.com/*",
+    "https://cdn.discordapp.com/*",
+    "https://media.discordapp.net/*"
+  ],
+  "icons": {
+    "128": "icon128.png"
+  }
+}

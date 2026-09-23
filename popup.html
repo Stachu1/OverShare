@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Discord Big Files</title>
+  <style>
+    :root {
+      --bg: #1b1c22;
+      --panel: #24252d;
+      --panel-2: #2b2d36;
+      --border: #3a3c47;
+      --text: #e7e8ec;
+      --muted: #9a9ca6;
+      --accent: #5865f2;      /* Discord blurple */
+      --accent-hover: #4752c4;
+      --ok: #3ba55d;
+      --err: #ed4245;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      width: 360px;
+      font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      color-scheme: dark;
+      scrollbar-width: thin;                     /* Firefox */
+      scrollbar-color: var(--border) transparent;
+    }
+    /* Thin, subtle scrollbars (Chromium) — no chunky default gutter */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #565866; }
+    header {
+      display: flex; align-items: center; gap: 10px;
+      padding: 14px 16px; background: var(--panel);
+      border-bottom: 1px solid var(--border);
+    }
+    header .dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--accent); box-shadow: 0 0 8px var(--accent);
+    }
+    header h1 { font-size: 15px; font-weight: 600; margin: 0; flex: 1; }
+
+    main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+
+    label {
+      display: block; font-size: 12px; color: var(--muted);
+      margin-bottom: 6px; font-weight: 600; letter-spacing: 0.02em;
+    }
+    .row { display: flex; gap: 8px; align-items: flex-end; }
+    .row > div { flex: 1; }
+
+    input[type="text"], input[type="password"], input[type="number"], textarea {
+      width: 100%; padding: 10px 12px;
+      background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text); font-size: 13px;
+      outline: none; transition: border-color 0.15s;
+    }
+    input:focus, textarea:focus { border-color: var(--accent); }
+    input[type="number"]::-webkit-inner-spin-button { opacity: 0.6; }
+    textarea { resize: vertical; min-height: 40px; }
+
+    button.mini {
+      padding: 10px 12px; white-space: nowrap;
+      background: var(--panel-2); color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px;
+      font-size: 12px; font-weight: 600; cursor: pointer;
+      transition: border-color 0.15s;
+    }
+    button.mini:hover { border-color: var(--accent); }
+
+    /* Tabs */
+    .tabs { display: flex; gap: 6px; background: var(--panel-2); padding: 4px; border-radius: 10px; }
+    .tabs button {
+      flex: 1; padding: 8px; border: none; border-radius: 7px;
+      background: transparent; color: var(--muted);
+      font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s;
+    }
+    .tabs button.active { background: var(--accent); color: #fff; }
+
+    .panel { display: none; flex-direction: column; gap: 14px; }
+    .panel.active { display: flex; }
+
+    .drop {
+      border: 1.5px dashed var(--border); border-radius: 10px;
+      padding: 18px; text-align: center; color: var(--muted);
+      cursor: pointer; transition: border-color 0.15s, background 0.15s;
+    }
+    .drop:hover, .drop.drag { border-color: var(--accent); background: var(--panel-2); }
+    .drop.has-file { color: var(--text); border-style: solid; border-color: var(--accent); }
+    .drop .name { font-weight: 600; word-break: break-all; }
+    .drop .size { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    input[type="file"] { display: none; }
+
+    button.send {
+      width: 100%; padding: 12px; background: var(--accent); color: #fff;
+      border: none; border-radius: 8px; font-size: 14px; font-weight: 600;
+      cursor: pointer; transition: background 0.15s;
+    }
+    button.send:hover:not(:disabled) { background: var(--accent-hover); }
+    button.send:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .progress { height: 6px; background: var(--panel-2); border-radius: 4px; overflow: hidden; display: none; }
+    .progress .bar { height: 100%; width: 0%; background: var(--accent); transition: width 0.2s; }
+
+    .status { font-size: 12px; min-height: 16px; word-break: break-word; }
+    .status.ok { color: var(--ok); }
+    .status.err { color: var(--err); }
+    .status.info { color: var(--muted); }
+
+    .hint { font-size: 11px; color: var(--muted); line-height: 1.5; }
+    #chunkInfo { color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
+
+    /* Download list */
+    .list { display: flex; flex-direction: column; gap: 8px; max-height: 320px; overflow-y: auto; }
+    .item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 12px; background: var(--panel-2);
+      border: 1px solid var(--border); border-radius: 8px;
+    }
+    .item .meta { flex: 1; min-width: 0; }
+    .item .fname { font-size: 13px; font-weight: 600; word-break: break-all; }
+    .item .sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .item .sub.incomplete { color: var(--err); }
+    .item button {
+      padding: 8px 12px; border: none; border-radius: 7px;
+      background: var(--accent); color: #fff; font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+    .item button:hover:not(:disabled) { background: var(--accent-hover); }
+    .item button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .empty { text-align: center; color: var(--muted); font-size: 12px; padding: 24px 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="dot"></span>
+    <h1>Discord Big Files</h1>
+  </header>
+
+  <main>
+    <!-- Shared: auth + target (used by both tabs) -->
+    <div class="row">
+      <div>
+        <label for="token">Account token</label>
+        <input type="password" id="token" placeholder="paste, or click Detect" autocomplete="off" />
+      </div>
+      <button class="mini" id="detect" title="Read token + channel from the active Discord tab">Detect</button>
+    </div>
+    <div>
+      <label for="channel">Channel / DM ID</label>
+      <input type="text" id="channel" placeholder="e.g. 123456789012345678" autocomplete="off" />
+    </div>
+
+    <div class="tabs">
+      <button id="tabSend" class="active">Send</button>
+      <button id="tabDownload">Download</button>
+    </div>
+
+    <!-- SEND -->
+    <section class="panel active" id="sendPanel">
+      <div>
+        <label>File</label>
+        <div class="drop" id="drop"><div id="dropLabel">Click or drop a file here</div></div>
+        <input type="file" id="file" />
+      </div>
+      <div class="row">
+        <div>
+          <label for="chunk">Chunk size (MB) <span id="chunkInfo"></span></label>
+          <input type="number" id="chunk" min="0.001" step="any" value="8" />
+        </div>
+        <div>
+          <label for="maxmsg">Max / message (MB)</label>
+          <input type="number" id="maxmsg" min="0.001" step="any" value="25" />
+        </div>
+      </div>
+      <div>
+        <label for="note">Message (optional)</label>
+        <textarea id="note" placeholder=""></textarea>
+      </div>
+      <div class="progress" id="progress"><div class="bar" id="bar"></div></div>
+      <button class="send" id="send" disabled>Send file</button>
+    </section>
+
+    <!-- DOWNLOAD -->
+    <section class="panel" id="downloadPanel">
+      <button class="mini" id="refresh" style="width:100%">Refresh list</button>
+      <div class="list" id="fileList"><div class="empty">Click Refresh to load recent files.</div></div>
+    </section>
+
+    <div class="status info" id="status"></div>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>
