@@ -24,11 +24,15 @@ const els = {
   progress: document.getElementById("progress"),
   bar: document.getElementById("bar"),
   // download
-  refresh: document.getElementById("refresh"),
   fileList: document.getElementById("fileList"),
+  loadOlderWrap: document.getElementById("loadOlderWrap"),
   // shared
   status: document.getElementById("status"),
+  version: document.getElementById("version"),
 };
+
+// Show the extension version (from the manifest) in the header.
+els.version.textContent = "v" + chrome.runtime.getManifest().version;
 
 let selectedFile = null;
 
@@ -40,6 +44,9 @@ chrome.storage.local.get(["token", "channel", "chunkMB", "maxMsgMB"], (data) => 
   if (data.maxMsgMB) els.maxmsg.value = data.maxMsgMB;
   refreshSendState();
   updateChunkInfo();
+  // Restore is done — if the popup opened on a Discord tab, auto-fill from it;
+  // otherwise keep the values just restored.
+  detectFromTab(true);
 });
 els.token.addEventListener("change", () => chrome.storage.local.set({ token: els.token.value.trim() }));
 els.channel.addEventListener("change", () => chrome.storage.local.set({ channel: els.channel.value.trim() }));
@@ -164,6 +171,13 @@ function showTab(which) {
 els.tabSend.addEventListener("click", () => showTab("send"));
 els.tabDownload.addEventListener("click", () => showTab("download"));
 
+// Keep both tabs the same height so switching doesn't resize the popup.
+// Measured once after layout, while the Send panel is the active (visible) one.
+requestAnimationFrame(() => {
+  const h = els.sendPanel.offsetHeight;
+  if (h) els.downloadPanel.style.minHeight = h + "px";
+});
+
 // --- File selection ---
 els.drop.addEventListener("click", () => els.file.click());
 els.file.addEventListener("change", (e) => pickFile(e.target.files[0]));
@@ -175,6 +189,17 @@ els.drop.addEventListener("drop", (e) => {
 });
 els.token.addEventListener("input", refreshSendState);
 els.channel.addEventListener("input", refreshSendState);
+
+// Auto-grow the message box: one line by default, expand with content up to a cap.
+const NOTE_MAX = 120;
+function autoGrowNote() {
+  els.note.style.height = "auto";
+  const h = Math.min(els.note.scrollHeight, NOTE_MAX);
+  els.note.style.height = h + "px";
+  els.note.style.overflowY = els.note.scrollHeight > NOTE_MAX ? "auto" : "hidden";
+}
+els.note.addEventListener("input", autoGrowNote);
+autoGrowNote(); // set the initial single-line height
 els.chunk.addEventListener("input", updateChunkInfo);
 els.maxmsg.addEventListener("input", updateChunkInfo);
 
@@ -197,25 +222,28 @@ function grabFromPage() {
   if (m) channelId = m[1];
   return { token, channelId };
 }
-els.detect.addEventListener("click", async () => {
-  setStatus("Reading from Discord tab…", "info");
+// `auto` = ran on popup open: stay silent and keep existing values off Discord.
+async function detectFromTab(auto = false) {
+  if (!auto) setStatus("Reading from Discord tab…", "info");
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab || !/^https:\/\/(discord\.com|discordapp\.com)\//.test(tab.url || "")) {
-      setStatus("Open a Discord tab (discord.com) first, then Detect.", "err");
-      return;
+    const isDiscord = tab && /^https:\/\/(discord\.com|discordapp\.com)\//.test(tab.url || "");
+    if (!isDiscord) {
+      if (!auto) setStatus("Open a Discord tab (discord.com) first, then Detect.", "err");
+      return; // not a Discord tab — leave the previous token/channel untouched
     }
     const [{ result }] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: grabFromPage });
     if (result?.token) { els.token.value = result.token; chrome.storage.local.set({ token: result.token }); }
     if (result?.channelId) { els.channel.value = result.channelId; chrome.storage.local.set({ channel: result.channelId }); }
     refreshSendState();
     if (result?.token && result?.channelId) setStatus("Got token + channel ✓", "ok");
-    else if (result?.token) setStatus("Got token. Open the target DM/channel for its ID.", "info");
-    else setStatus("Couldn't read token — paste from DevTools → Application → Local Storage.", "err");
+    else if (result?.token) setStatus(auto ? "Token detected." : "Got token. Open the target DM/channel for its ID.", "info");
+    else if (!auto) setStatus("Couldn't read token — paste from DevTools → Application → Local Storage.", "err");
   } catch (err) {
-    setStatus("Detect failed: " + err.message, "err");
+    if (!auto) setStatus("Detect failed: " + err.message, "err");
   }
-});
+}
+els.detect.addEventListener("click", () => detectFromTab(false));
 
 // ============================ SEND ============================
 
@@ -345,9 +373,26 @@ function inferMime(name) {
   return MIME[ext] || "application/octet-stream";
 }
 
-// Read recent messages and group attachments into downloadable files.
-async function fetchFiles(token, channelId) {
-  const res = await fetch(`${API}/channels/${channelId}/messages?limit=100`, {
+const PAGE = 100; // Discord's max messages per request
+
+// Accumulated across pages so chunk sets that straddle a page boundary reunite,
+// and "Load older" can append without losing what's already listed.
+let groupsMap = new Map(); // key -> { name, total, parts:Map<idx,{url,size}>, order }
+let groupOrder = 0;
+let oldestId = null;       // id of the oldest message seen, for ?before=
+let moreAvailable = false; // last page was full, so older history may exist
+
+function resetGroups() {
+  groupsMap = new Map();
+  groupOrder = 0;
+  oldestId = null;
+  moreAvailable = false;
+}
+
+// Fetch one page of messages (optionally older than `before`).
+async function fetchPage(token, channelId, before) {
+  const qs = before ? `&before=${before}` : "";
+  const res = await fetch(`${API}/channels/${channelId}/messages?limit=${PAGE}${qs}`, {
     headers: { Authorization: token },
   });
   if (!res.ok) {
@@ -355,30 +400,32 @@ async function fetchFiles(token, channelId) {
     try { const b = await res.json(); if (b.message) msg += ` — ${b.message}`; } catch (_) {}
     throw new Error(msg);
   }
-  const messages = await res.json(); // newest first
+  return res.json(); // newest first
+}
 
-  const groups = new Map(); // key -> { name, total, parts:Map<idx,{url,size}>, order }
-  let order = 0;
+// Merge a page's attachments into groupsMap and update pagination state.
+function ingest(messages) {
   for (const msg of messages) {
     for (const att of msg.attachments || []) {
       const m = att.filename.match(CHUNK_RE);
       if (m) {
         const base = m[1], idx = parseInt(m[2], 10), tot = parseInt(m[3], 10);
         const key = `${base}\u0000${tot}`;
-        if (!groups.has(key)) groups.set(key, { name: base, total: tot, parts: new Map(), order: order++ });
-        const g = groups.get(key);
+        if (!groupsMap.has(key)) groupsMap.set(key, { name: base, total: tot, parts: new Map(), order: groupOrder++ });
+        const g = groupsMap.get(key);
         if (!g.parts.has(idx)) g.parts.set(idx, { url: att.url, size: att.size });
       } else {
         // A plain (non-chunked) attachment — one-part file.
-        groups.set(`single\u0000${att.id}`, {
+        groupsMap.set(`single\u0000${att.id}`, {
           name: att.filename, total: 1,
           parts: new Map([[1, { url: att.url, size: att.size }]]),
-          order: order++, single: true,
+          order: groupOrder++, single: true,
         });
       }
     }
   }
-  return [...groups.values()].sort((a, b) => a.order - b.order);
+  if (messages.length) oldestId = messages[messages.length - 1].id;
+  moreAvailable = messages.length === PAGE;
 }
 
 // Fetch every part in order, concatenate, and save under the original name.
@@ -400,12 +447,30 @@ async function reassemble(group) {
   sfx.download();
 }
 
-function renderList(groups) {
+const VISIBLE_ROWS = 4; // show this many files before the list scrolls
+
+// Cap the list to VISIBLE_ROWS items so it cuts cleanly (measured, so it holds
+// even when a long filename wraps to two lines).
+function limitListHeight() {
+  const items = els.fileList.querySelectorAll(".item");
+  if (items.length <= VISIBLE_ROWS) { els.fileList.style.maxHeight = ""; return; }
+  const gap = 8;
+  let h = 0;
+  for (let i = 0; i < VISIBLE_ROWS; i++) h += items[i].offsetHeight;
+  els.fileList.style.maxHeight = (h + gap * (VISIBLE_ROWS - 1)) + "px";
+}
+
+function renderList() {
   els.fileList.textContent = "";
+  els.loadOlderWrap.textContent = "";
+  const groups = [...groupsMap.values()].sort((a, b) => a.order - b.order);
+  if (moreAvailable) els.loadOlderWrap.appendChild(makeLoadOlderButton());
   if (!groups.length) {
     const e = document.createElement("div");
     e.className = "empty";
-    e.textContent = "No files found in the last 100 messages.";
+    e.textContent = moreAvailable
+      ? "No files in these messages — try Load older."
+      : "No files found.";
     els.fileList.appendChild(e);
     return;
   }
@@ -446,6 +511,17 @@ function renderList(groups) {
     item.appendChild(btn);
     els.fileList.appendChild(item);
   }
+  limitListHeight();
+}
+
+function makeLoadOlderButton() {
+  const btn = document.createElement("button");
+  btn.className = "mini";
+  btn.id = "loadOlder";
+  btn.style.width = "100%";
+  btn.textContent = "Load older files";
+  btn.addEventListener("click", () => loadOlder());
+  return btn;
 }
 
 let listLoading = false;
@@ -460,16 +536,36 @@ async function refreshList(auto = false) {
   if (listLoading) return;
   listLoading = true;
   setStatus("Loading recent files…", "info");
-  els.refresh.disabled = true;
   try {
-    const groups = await fetchFiles(token, channelId);
-    renderList(groups);
-    setStatus(`Found ${groups.length} file(s).`, "ok");
+    resetGroups();
+    ingest(await fetchPage(token, channelId, null));
+    renderList();
+    setStatus(`Found ${groupsMap.size} file(s).`, "ok");
   } catch (err) {
     setStatus("Failed to load: " + err.message, "err");
   } finally {
-    els.refresh.disabled = false;
     listLoading = false;
   }
 }
-els.refresh.addEventListener("click", () => refreshList(false));
+
+// Append the next older page to the list.
+async function loadOlder() {
+  const token = els.token.value.trim();
+  const channelId = els.channel.value.trim();
+  if (!token || !channelId || listLoading || !oldestId) return;
+  listLoading = true;
+  const btn = document.getElementById("loadOlder");
+  if (btn) { btn.disabled = true; btn.textContent = "Loading…"; }
+  setStatus("Loading older files…", "info");
+  try {
+    ingest(await fetchPage(token, channelId, oldestId));
+    renderList();
+    setStatus(`${groupsMap.size} file(s) loaded${moreAvailable ? " (more available)" : ""}.`, "ok");
+  } catch (err) {
+    setStatus("Failed to load older: " + err.message, "err");
+    if (btn) { btn.disabled = false; btn.textContent = "Load older files"; }
+  } finally {
+    listLoading = false;
+  }
+}
+

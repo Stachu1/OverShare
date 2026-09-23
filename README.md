@@ -1,4 +1,4 @@
-# Discord Big Files
+# Overshare
 
 A browser extension (Chrome/Edge, Manifest V3) with a MetaMask-style popup for
 sending large files to Discord — including **DMs**. Because Discord caps upload
@@ -25,9 +25,9 @@ part only. Rate limits (HTTP 429) are waited out and retried automatically.
 ### Bundling chunks into fewer messages
 
 Discord allows up to **10 attachments per message**, bounded by a total size
-limit. **Max / message (MB)** (default 25) controls how many chunks are packed
+limit. **Max / message (MB)** (default 40) controls how many chunks are packed
 into one message: `min(10, floor(maxPerMsg / chunkSize))`. So 8 MB chunks with a
-25 MB budget go 3-per-message. The live readout shows `→ N chunks · M messages`.
+40 MB budget go 5-per-message. The live readout shows `→ N chunks · M messages`.
 
 Bundling can't beat the size cap — a genuinely large file still spans multiple
 messages. If a message 413s, lower the chunk size or the per-message budget.
@@ -36,10 +36,11 @@ Reassembly doesn't care how chunks were packed; it groups by filename.
 ## Download tab
 
 Switching to this tab **auto-loads** the list (silently if token/channel aren't
-set yet). **Refresh** reads the last 100 messages of the channel via
-`GET /channels/<id>/messages`, groups attachments by the `<i>_<total>` naming,
-and lists each file with its chunk count / size (incomplete sets are flagged and
-not downloadable). **Download** fetches every part from Discord's CDN in order,
+set yet) by reading the last 100 messages via `GET /channels/<id>/messages`,
+grouping attachments by the `<i>_<total>` naming, and listing each file with its
+chunk count / size (incomplete sets are flagged and not downloadable). **Load
+older files** at the top pages further back and appends to the list. **Download**
+fetches every part from Discord's CDN in order,
 concatenates the blobs, and saves under the original name (suffix stripped).
 Plain, non-chunked attachments are listed too, as single-part files.
 
@@ -67,8 +68,9 @@ This works for any channel **and DMs** (a DM is just a channel whose id lives at
 ## Use it
 
 1. Open Discord in a tab and go to the DM/channel you want to send to.
-2. Click the extension icon → **Detect**. This reads your token and the current
-   channel id straight from that tab. (You can also paste both manually.)
+2. Click the extension icon. If the popup opens on a Discord tab it **auto-detects**
+   your token and the current channel id; off Discord it keeps your last values.
+   You can also press **Detect** manually, or paste both.
 3. Drop a file, optionally add a message, **Send**.
 
 Token + channel are saved in `chrome.storage.local` so you don't re-enter them.
@@ -104,5 +106,6 @@ be silent (browsers resume audio only after a user gesture).
 - **Download saves from the popup** — if you close the popup mid-download of a
   very large file, the object URL can be revoked before Chrome finishes reading
   it. Keep the popup open until the save starts.
-- Only the last **100 messages** are scanned. Paging further back is a small
-  follow-up (`before=<message_id>`) if you need deeper history.
+- The list starts with the most recent **100 messages**; use **Load older files**
+  at the top to page further back (`before=<message_id>`). Results accumulate,
+  so chunk sets split across a page boundary reunite.
