@@ -73,7 +73,7 @@ function refreshSendState() {
     return;
   }
   els.send.classList.remove("cancel");
-  els.send.textContent = "Send encrypted file";
+  els.send.textContent = "Send";
   els.send.disabled = !payload;
 }
 function resetUploadProgress() {

@@ -147,8 +147,11 @@
       cursor: pointer; transition: background 0.15s, transform 0.08s;
     }
     button.send:hover:not(:disabled) { background: var(--accent-hover); }
+    /* Green once files are loaded and the button is usable */
+    button.send:not(:disabled):not(.cancel) { background: var(--ok); }
+    button.send:hover:not(:disabled):not(.cancel) { background: #2d8a4c; }
     button.send.ready { animation: ready-pulse 0.9s ease-out; }
-    @keyframes ready-pulse { 0% { box-shadow: 0 0 0 0 rgba(88, 101, 242, 0.7); } 100% { box-shadow: 0 0 0 12px rgba(88, 101, 242, 0); } }
+    @keyframes ready-pulse { 0% { box-shadow: 0 0 0 0 rgba(59, 165, 93, 0.7); } 100% { box-shadow: 0 0 0 12px rgba(59, 165, 93, 0); } }
     button:active:not(:disabled) { transform: scale(0.96); }
     button.send:disabled { opacity: 0.5; cursor: not-allowed; }
     /* While sending, the Send button becomes a red Cancel */
@@ -281,10 +284,10 @@
       <div>
         <label>File token</label>
         <div class="row"><button class="mini copy-send-token" id="keyCopy" title="Copy file token">Copy Token</button></div>
-        <div class="hint">The file token is available after selecting a file and is stored after a successful send.</div>
+        <div class="hint">Copies the file token of the latest sent file.</div>
       </div>
       <div class="progress" id="progress"><div class="bar" id="bar"></div></div>
-      <button class="send" id="send" disabled>Send encrypted file</button>
+      <button class="send" id="send" disabled>Send</button>
     </section>
 
     <section class="panel" id="downloadPanel">
