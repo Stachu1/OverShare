@@ -64,7 +64,8 @@
       margin-bottom: 4px; font-weight: 600; letter-spacing: 0.02em;
     }
     .row { display: flex; gap: 8px; align-items: flex-end; }
-    .row > div { flex: 1; }
+    .row > div { flex: 1; min-width: 0; }
+    .row > div.channel-field { flex: 0 0 118px; }
 
     input[type="text"], input[type="password"], input[type="number"], textarea {
       width: 100%; padding: 9px 12px;
@@ -196,10 +197,14 @@
   </header>
 
   <main>
-    <!-- The Python bridge owns the Discord bot token. -->
     <div>
-      <label>Local transfer service</label>
-      <div id="serverStatus" class="tokenstatus checking">Checking localhost:7878…</div>
+      <label>Discord bot</label>
+      <div class="row">
+        <div><input type="password" id="botToken" placeholder="Bot token" autocomplete="off" /></div>
+        <div class="channel-field"><input type="text" id="channelId" placeholder="Channel ID" /></div>
+        <button class="mini" id="saveBot">Save</button>
+      </div>
+      <div id="botStatus" class="tokenstatus checking">Checking bot…</div>
     </div>
     <div class="tabs">
       <button id="tabSend" class="active">Send</button>
@@ -226,7 +231,7 @@
     </section>
 
     <section class="panel" id="downloadPanel">
-      <!-- <div class="hint">The server searches Discord for transfers whose file tokens are stored in this extension.</div> -->
+      <!-- <div class="hint">OverShare searches Discord for transfers whose file tokens are stored in this extension.</div> -->
       <div class="row token-actions">
         <button class="mini" id="exportStorage">Export Tokens</button>
         <button class="mini" id="importStorage">Import Tokens</button>

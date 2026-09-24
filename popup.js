@@ -1,20 +1,18 @@
 "use strict";
 
 const CHUNK_BYTES = 20 * 1024 * 1024;
-const LOCAL_SERVER = "http://localhost:7878";
-const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "serverStatus", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute"];
+const SETTINGS_KEYS = ["botToken", "channelId"];
+const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "botToken", "channelId", "saveBot", "botStatus", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute"];
 const els = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 let selection = null;
 let payload = null;
 let preparing = false;
 let muted = false;
 let activeUpload = null;
-let uploadMonitor = 0;
+let config = { token: "", channelId: "" };
 
 els.version.textContent = "v" + chrome.runtime.getManifest().version;
 function setStatus(message, kind = "info") { els.status.textContent = message; els.status.className = `status ${kind}`; }
-function humanSize(bytes) { const units = ["B", "KB", "MB", "GB"]; let n = bytes, i = 0; while (n >= 1024 && i < 3) { n /= 1024; i++; } return `${n.toFixed(n < 10 && i ? 1 : 0)} ${units[i]}`; }
-async function sha256hex(bytes) { const hash = await crypto.subtle.digest("SHA-256", bytes); return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join(""); }
 function base64url(bytes) { return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
 function escapeHtml(value) { return String(value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 async function readBytes(file) { return new Uint8Array(await file.arrayBuffer()); }
@@ -82,30 +80,24 @@ function applyUploadState(state) {
     els.bar.style.width = percent + "%";
     setStatus(state.canceling ? `Canceling upload… ${percent}%` : `Sending chunks: ${state.sent || 0}/${state.total || 1} (${percent}%)`, "info");
   } else if (activeUpload) {
+    // An idle reply can race a send this popup just started; only a restored upload should be cleared by it.
+    if (state.idle && !activeUpload.restored) return;
     const old = activeUpload;
     activeUpload = null;
     resetUploadProgress();
     refreshSendState();
     if (state.outcome === "ok") { playSound("send"); setStatus(`Sent ${state.name || old.name}: ${state.total || old.total} chunk(s) ✓`, "ok"); }
-    else if (state.outcome === "canceled") setStatus("Upload canceled and partial Discord messages removed.", "info");
+    else if (state.outcome === "canceled") {
+      if (state.error?.includes("cleanup failed")) setStatus(state.error, "err");
+      else setStatus("Upload canceled and partial Discord messages removed.", "info");
+    }
     else if (state.outcome === "error") setStatus("Send failed: " + (state.error || "Upload failed"), "err");
-  }
-}
-async function monitorStoredUpload(record) {
-  const monitorId = ++uploadMonitor;
-  activeUpload = record;
-  refreshSendState();
-  for (;;) {
-    if (monitorId !== uploadMonitor || !activeUpload) return;
-    try {
-      const response = await fetch(`${LOCAL_SERVER}/upload/status/${record.jobId}`);
-      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
-      const state = await response.json();
-      applyUploadState({ active: state.state === "sending", jobId: record.jobId, name: record.name, sent: state.sent, total: state.total, state: state.state });
-      if (state.state === "complete") { applyUploadState({ active: false, outcome: "ok", name: record.name, total: record.total }); return; }
-      if (state.state === "canceled" || state.state === "error") { applyUploadState({ active: false, outcome: state.state === "canceled" ? "canceled" : "error", error: state.error, name: record.name, total: record.total }); return; }
-    } catch (error) { setStatus("Upload status failed: " + error.message, "err"); return; }
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    else if (state.idle && old.restored) {
+      // The engine has no upload, but storage says one was running: the browser
+      // closed mid-send. Its partial messages stay until the file is deleted.
+      chrome.storage.local.remove(["activeUpload"]);
+      setStatus(`Upload of ${old.name} was interrupted. Send it again.`, "err");
+    }
   }
 }
 
@@ -138,10 +130,18 @@ document.addEventListener("mouseover", (event) => { const button = event.target.
 document.addEventListener("mouseout", (event) => { if (!event.relatedTarget?.closest?.("button")) hoveredButton = null; });
 document.addEventListener("click", (event) => { const button = event.target.closest("button"); if (button && button !== els.mute) playSound("click"); }, true);
 
-async function checkServer() {
-  try { const response = await fetch(`${LOCAL_SERVER}/health`); if (!response.ok) throw new Error(); els.serverStatus.textContent = "Local transfer server connected"; els.serverStatus.className = "tokenstatus ok"; }
-  catch (_) { els.serverStatus.textContent = "Start the Python server on localhost:7878"; els.serverStatus.className = "tokenstatus bad"; }
+function setBotStatus(message, kind) { els.botStatus.textContent = message; els.botStatus.className = `tokenstatus ${kind}`; }
+async function checkBot() {
+  if (!config.token || !config.channelId) { setBotStatus("Enter the bot token and channel ID", "bad"); return false; }
+  setBotStatus("Checking bot…", "checking");
+  try {
+    const bot = await discordRequest(config, "GET", "/users/@me");
+    const target = await discordRequest(config, "GET", `/channels/${config.channelId}`);
+    setBotStatus(`Connected as ${bot.username} · ${target.name ? "#" + target.name : "DM"}`, "ok");
+    return true;
+  } catch (error) { setBotStatus(error.message, "bad"); return false; }
 }
+function requireConfig() { if (!config.token || !config.channelId) throw new Error("set the bot token and channel ID first"); }
 function showTab(download) {
   els.tabSend.classList.toggle("active", !download); els.tabDownload.classList.toggle("active", download);
   els.sendPanel.classList.toggle("active", !download); els.downloadPanel.classList.toggle("active", download);
@@ -188,8 +188,8 @@ async function deleteFileToken(file, button) {
   if (!confirm(`Delete "${file.name}" from Discord and local storage? This cannot be undone.`)) return;
   button.disabled = true;
   try {
-    const response = await fetch(`${LOCAL_SERVER}/delete`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keys: [`${file.sha}.${symmetricKey}`] }) });
-    if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+    requireConfig();
+    await deleteTransfers(config, [file.sha]);
     await chrome.storage.local.remove([`${file.sha}.symmetricKey`]);
     const data = await chrome.storage.local.get(["lastFileToken", "lastKey"]);
     const token = `${file.sha}.${symmetricKey}`;
@@ -200,11 +200,10 @@ async function deleteFileToken(file, button) {
   finally { button.disabled = false; }
 }
 async function refreshFiles() {
+  if (!config.token || !config.channelId) { els.fileList.innerHTML = '<div class="empty">Set the bot token and channel ID first.</div>'; return; }
   els.fileList.innerHTML = '<div class="empty">Searching Discord…</div>';
   try {
-    const response = await fetch(`${LOCAL_SERVER}/files`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keys: await storedKeys() }) });
-    if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
-    const result = await response.json(); const files = result.files || []; renderFiles(files); const complete = files.filter((file) => file.available).length; const incomplete = files.length - complete; setStatus(`${complete} complete, ${incomplete} incomplete file(s).`, incomplete ? "info" : "ok");
+    const { files } = await findTransfers(config, await storedKeys()); renderFiles(files); const complete = files.filter((file) => file.available).length; const incomplete = files.length - complete; setStatus(`${complete} complete, ${incomplete} incomplete file(s).`, incomplete ? "info" : "ok");
   } catch (error) { els.fileList.innerHTML = '<div class="empty">Could not search for files.</div>'; setStatus("Search failed: " + error.message, "err"); }
 }
 async function saveBytes(bytes, filename) {
@@ -221,56 +220,6 @@ async function saveFolder(dirHandle, files) {
     const handle = await current.getFileHandle(filename, { create: true }); const writer = await handle.createWritable(); await writer.write(bytes); await writer.close();
   }
 }
-function uploadPayload(url, metadata, bytes, onProgress) {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", url);
-    xhr.setRequestHeader("Content-Type", "application/octet-stream");
-    xhr.setRequestHeader("X-OverShare-Metadata", JSON.stringify(metadata));
-    xhr.upload.addEventListener("progress", (event) => {
-      if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
-    });
-    xhr.addEventListener("load", () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try { resolve(JSON.parse(xhr.responseText || "{}")); }
-        catch (_) { reject(new Error("Invalid upload response")); }
-      }
-      else reject(new Error(xhr.responseText || `HTTP ${xhr.status}`));
-    });
-    xhr.addEventListener("error", () => reject(new Error("Network error")));
-    xhr.addEventListener("timeout", () => reject(new Error("Upload timed out")));
-    xhr.timeout = 15 * 60 * 1000;
-    xhr.send(bytes);
-  });
-}
-async function waitForUpload(jobId, onProgress) {
-  for (;;) {
-    const response = await fetch(`${LOCAL_SERVER}/upload/status/${jobId}`);
-    if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
-    const job = await response.json();
-    onProgress(job.sent || 0, job.total || 1);
-    if (job.state === "complete") return;
-    if (job.state === "error") throw new Error(job.error || "Upload failed");
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-}
-async function readDownloadResponse(response, onProgress) {
-  if (!response.body) return new Uint8Array(await response.arrayBuffer());
-  const expected = Number(response.headers.get("Content-Length")) || 0;
-  const reader = response.body.getReader();
-  const chunks = [];
-  let received = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value); received += value.length;
-    if (expected) onProgress(Math.min(100, Math.round((received / expected) * 100)));
-  }
-  const bytes = new Uint8Array(received);
-  let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
-  return bytes;
-}
 async function downloadFile(file, button) {
   button.disabled = true; button.textContent = "Downloading…";
   els.downloadProgress.style.display = "block"; els.downloadBar.style.width = "0%";
@@ -279,9 +228,8 @@ async function downloadFile(file, button) {
     if (file.kind === "folder" && window.showDirectoryPicker) dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
     const keyData = await chrome.storage.local.get(`${file.sha}.symmetricKey`);
     const key = `${file.sha}.${keyData[`${file.sha}.symmetricKey`]}`;
-    const response = await fetch(`${LOCAL_SERVER}/download`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key }) });
-    if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
-    const zip = await readDownloadResponse(response, (percent) => { els.downloadBar.style.width = percent + "%"; }); const entries = fflate.unzipSync(zip); const names = Object.keys(entries).filter((name) => !name.endsWith("/"));
+    requireConfig();
+    const { zip } = await downloadTransfer(config, key, (percent) => { els.downloadBar.style.width = percent + "%"; }); const entries = fflate.unzipSync(zip); const names = Object.keys(entries).filter((name) => !name.endsWith("/"));
     if (dirHandle) await saveFolder(dirHandle, entries);
     else if (file.kind === "file" && names.length === 1) await saveBytes(entries[names[0]], names[0].split("/").pop());
     else await saveBytes(zip, file.name.replace(/\/$/, "") + ".zip");
@@ -320,7 +268,9 @@ function downloadJson(filename, value) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 els.exportStorage.addEventListener("click", async () => {
-  downloadJson("overshare-storage.json", await chrome.storage.local.get(null));
+  const data = await chrome.storage.local.get(null);
+  for (const key of SETTINGS_KEYS) delete data[key];
+  downloadJson("overshare-storage.json", data);
   setStatus("File tokens exported.", "ok");
 });
 els.importStorage.addEventListener("click", () => els.importFile.click());
@@ -343,13 +293,13 @@ els.deleteStorage.addEventListener("click", async () => {
   if (!confirm(`Delete ${tokens.length} file token(s) and their Discord files? This cannot be undone.`)) return;
   els.deleteStorage.disabled = true;
   try {
-    const response = await fetch(`${LOCAL_SERVER}/delete`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keys: tokens }) });
-    if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+    requireConfig();
+    const deleted = await deleteTransfers(config, [...shasFromKeys(tokens)]);
     const data = await chrome.storage.local.get(null);
     const removals = Object.keys(data).filter((name) => name.endsWith(".symmetricKey") || name === "lastFileToken" || name === "lastKey");
     await chrome.storage.local.remove(removals);
     els.downloadToken.value = ""; els.fileList.innerHTML = '<div class="empty">No stored file tokens.</div>';
-    setStatus(`Deleted ${data.deleted ?? tokens.length} Discord file message(s) and local token(s).`, "ok");
+    setStatus(`Deleted ${deleted} Discord file message(s) and local token(s).`, "ok");
   } catch (error) { setStatus("Delete failed: " + error.message, "err"); }
   finally { els.deleteStorage.disabled = false; }
 });
@@ -363,19 +313,16 @@ els.send.addEventListener("click", async () => {
   if (activeUpload) {
     activeUpload.canceling = true;
     refreshSendState();
-    try {
-      if (activeUpload.jobId) await fetch(`${LOCAL_SERVER}/upload/cancel/${activeUpload.jobId}`, { method: "POST" });
-      else transferChannel.postMessage({ type: "cancelUpload" });
-    }
-    catch (error) { setStatus("Cancel failed: " + error.message, "err"); activeUpload.canceling = false; refreshSendState(); }
+    transferChannel.postMessage({ type: "cancelUpload" });
     return;
   }
   if (!payload || preparing) return;
+  if (!config.token || !config.channelId) { setStatus("Set the bot token and channel ID first.", "err"); return; }
   els.send.disabled = true; els.send.textContent = "Starting…"; els.progress.style.display = "block"; els.bar.style.width = "0%";
   const total = Math.max(1, Math.ceil(payload.bytes.length / CHUNK_BYTES));
   const metadata = { sha: payload.sha, name: payload.name, kind: payload.kind, originalSize: payload.originalSize, encryptedSize: payload.bytes.length, total };
   try {
-    transferChannel.postMessage({ type: "startUpload", job: { metadata, symmetricKey: payload.symmetricKey, bytes: payload.bytes.buffer } }, [payload.bytes.buffer]);
+    transferChannel.postMessage({ type: "startUpload", job: { metadata, config, symmetricKey: payload.symmetricKey, bytes: payload.bytes.buffer } }, [payload.bytes.buffer]);
     activeUpload = { name: payload.name, sha: payload.sha, total, sent: 0 };
     refreshSendState();
   } catch (error) { setStatus("Send failed: " + error.message, "err"); refreshSendState(); }
@@ -383,6 +330,18 @@ els.send.addEventListener("click", async () => {
 els.tabSend.addEventListener("click", () => showTab(false)); els.tabDownload.addEventListener("click", () => showTab(true));
 const transferChannel = new BroadcastChannel("overshare");
 transferChannel.onmessage = (event) => { if (event.data?.type === "uploadState") applyUploadState(event.data.send); };
-chrome.runtime.sendMessage({ target: "background", type: "ensureEngine" }).then(() => transferChannel.postMessage({ type: "hello" })).catch(() => {});
-chrome.storage.local.get(["activeUpload", "muted"], (data) => { muted = !!data.muted; els.mute.textContent = muted ? "🔇" : "🔊"; if (data.activeUpload) monitorStoredUpload(data.activeUpload); else refreshSendState(); });
-checkServer();
+els.saveBot.addEventListener("click", async () => {
+  config = { token: els.botToken.value.trim(), channelId: els.channelId.value.trim() };
+  await chrome.storage.local.set({ botToken: config.token, channelId: config.channelId });
+  if (await checkBot() && els.downloadPanel.classList.contains("active")) refreshFiles();
+});
+chrome.storage.local.get(["activeUpload", "muted", ...SETTINGS_KEYS], (data) => {
+  muted = !!data.muted; els.mute.textContent = muted ? "🔇" : "🔊";
+  config = { token: data.botToken || "", channelId: data.channelId || "" };
+  els.botToken.value = config.token; els.channelId.value = config.channelId;
+  // Restore the stored upload before asking the engine, so its reply can confirm or clear it.
+  if (data.activeUpload) activeUpload = { ...data.activeUpload, restored: true };
+  refreshSendState();
+  chrome.runtime.sendMessage({ target: "background", type: "ensureEngine" }).then(() => transferChannel.postMessage({ type: "hello" })).catch(() => {});
+  checkBot();
+});

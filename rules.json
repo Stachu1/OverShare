@@ -5,7 +5,7 @@
     "action": {
       "type": "modifyHeaders",
       "requestHeaders": [
-        { "header": "User-Agent", "operation": "set", "value": "DiscordBot (https://github.com/overshare, 1.0)" }
+        { "header": "User-Agent", "operation": "set", "value": "DiscordBot (overshare, 3.0)" }
       ]
     },
     "condition": {
