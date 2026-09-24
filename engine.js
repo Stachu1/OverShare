@@ -83,6 +83,24 @@ class ByteQueue {
 }
 // Zip timestamps can't go before 1980.
 function zipTime(file) { return new Date(Math.max(file.lastModified || 0, Date.UTC(1980, 0, 2))); }
+// A deflated zip entry that lets go of its compressor once the file is done.
+// fflate's ZipDeflate can't: the zip keeps every entry's fields, its 96 KB
+// compression buffer included, until the zip ends, which for a folder of
+// thousands of files is hundreds of MB.
+function zipEntry(path, file) {
+	const entry = new fflate.ZipPassThrough(path);
+	entry.compression = 8; // deflate
+	entry.flag = 0;        // header flag for a normal compression level
+	entry.mtime = zipTime(file);
+	let deflate = new fflate.Deflate({ level: 6 }, (data, final) => {
+		if (final) deflate = null;
+		entry.ondata(null, data, final);
+	});
+	entry.process = (data, final) => {
+		try { deflate.push(data, final); } catch (error) { entry.ondata(error, null, final); }
+	};
+	return entry;
+}
 
 async function uploadFiles(job) {
 	const { metadata, config, files } = job;
@@ -148,7 +166,7 @@ async function uploadFiles(job) {
 		}
 
 		for (const { file, path: filePath } of files) {
-			const entry = new fflate.ZipDeflate(filePath, { level: 6, mtime: zipTime(file) });
+			const entry = zipEntry(filePath, file);
 			zip.add(entry);
 			if (!file.size) entry.push(new Uint8Array(0), true);
 			for (let offset = 0; offset < file.size; offset += READ_SLICE_BYTES) {
