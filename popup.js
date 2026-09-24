@@ -1,7 +1,7 @@
 "use strict";
 
 const SETTINGS_KEYS = ["botToken", "channelId"];
-const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "botToken", "channelId", "botStatus", "botDot", "flyer", "tabs", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute"];
+const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "botToken", "channelId", "botStatus", "botDot", "flyer", "tabs", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute", "tooltip"];
 const els = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 let selection = null;
 let payload = null;
@@ -75,28 +75,32 @@ function refreshSendState() {
     els.send.disabled = !!activeUpload.canceling;
     els.send.textContent = activeUpload.canceling ? "Canceling…" : "Cancel";
     els.send.classList.add("cancel");
+    els.send.dataset.tip = "Stop the upload and remove the chunks already sent";
     return;
   }
   els.send.classList.remove("cancel");
   els.send.textContent = "Send";
   els.send.disabled = !payload;
+  els.send.dataset.tip = payload ? "Compress, encrypt and upload the selection to Discord" : "Pick a file or folder first";
 }
 function resetUploadProgress() {
-  els.progress.style.display = "none";
+  els.progress.classList.remove("show");
   els.bar.style.width = "0%";
 }
 function applyUploadState(state) {
   if (state.active) {
     activeUpload = { ...activeUpload, ...state };
-    els.progress.style.display = "block";
+    els.progress.classList.add("show");
     const percent = state.totalBytes
       ? Math.min(100, Math.round((state.bytesSent / state.totalBytes) * 100))
       : Math.min(100, Math.round(((state.sent || 0) / (state.total || 1)) * 100));
     els.bar.style.width = percent + "%";
-    const chunk = `chunk ${state.sending || 1}`;
+    // The chunk count is only known once compression ends, so until then it is the uncompressed upper bound.
+    const chunks = state.total || Math.max(1, Math.ceil((state.totalBytes || 0) / PLAIN_CHUNK_BYTES));
+    const chunkLabel = `${state.total ? "" : "~"}${chunks} chunk${chunks === 1 ? "" : "s"}`;
     if (state.cleaning) setStatus(`Removing sent chunks of ${state.name}…`, "info");
     else if (state.canceling) setStatus(`Canceling upload… ${percent}%`, "info");
-    else setStatus(`Sending ${chunk} · ${percent}% · ${transferStats(state)}`, "info");
+    else setStatus(`Sending ${chunkLabel} · ${percent}% · ${transferStats(state)}`, "info");
     refreshSendState();
   } else if (activeUpload || state.outcome === "interrupted") {
     // An idle reply can race a send this popup just started; only a restored upload should be cleared by it.
@@ -110,6 +114,37 @@ function applyUploadState(state) {
     else setStatus(state.text || "Upload failed", state.failed ? "err" : "info");
   }
 }
+
+// Flashes a copy button's glow and briefly swaps its label to confirm the copy.
+function flashCopied(button) {
+  replayAnimation(button, "copied");
+  button.dataset.label ??= button.textContent;
+  button.textContent = "Copied!";
+  clearTimeout(button.copiedTimer);
+  button.copiedTimer = setTimeout(() => { button.textContent = button.dataset.label; }, 1200);
+}
+
+// Hover descriptions: one shared tooltip, kept inside the popup's edges.
+let tipTarget = null, tipTimer = 0;
+function showTip(target) {
+  els.tooltip.textContent = target.dataset.tip;
+  const box = target.getBoundingClientRect(), tip = els.tooltip.getBoundingClientRect();
+  const left = Math.min(Math.max(6, box.left + box.width / 2 - tip.width / 2), innerWidth - tip.width - 6);
+  const top = box.bottom + 6 + tip.height < innerHeight ? box.bottom + 6 : box.top - tip.height - 6;
+  els.tooltip.style.left = left + "px"; els.tooltip.style.top = top + "px";
+  els.tooltip.classList.add("show");
+}
+function hideTip() { clearTimeout(tipTimer); tipTarget = null; els.tooltip.classList.remove("show"); }
+document.addEventListener("mouseover", (event) => {
+  const target = event.target.closest("[data-tip]");
+  if (target === tipTarget) return;
+  hideTip();
+  if (!target) return;
+  tipTarget = target;
+  tipTimer = setTimeout(() => showTip(target), 450);
+});
+document.addEventListener("mousedown", hideTip);
+document.addEventListener("scroll", hideTip, true);
 
 function launchFlyer(emoji, className) {
   els.flyer.textContent = emoji;
@@ -216,10 +251,10 @@ function fileRow(file, position) {
     meta.append(when);
   }
   const actions = document.createElement("div"); actions.className = "item-actions";
-  const button = document.createElement("button"); button.textContent = "Download"; button.addEventListener("click", () => downloadFile(file));
-  const copyButton = document.createElement("button"); copyButton.className = "copy-token"; copyButton.textContent = "Copy"; copyButton.title = "Copy file token";
+  const button = document.createElement("button"); button.textContent = "Download"; button.dataset.tip = "Download, decrypt and save this file"; button.addEventListener("click", () => downloadFile(file));
+  const copyButton = document.createElement("button"); copyButton.className = "copy-token"; copyButton.textContent = "Copy"; copyButton.dataset.tip = "Copy this file's token to share it";
   copyButton.addEventListener("click", () => copyFileToken(file, copyButton));
-  const deleteButton = document.createElement("button"); deleteButton.className = "delete-file"; deleteButton.textContent = "Delete"; deleteButton.title = "Delete this file from Discord and local storage";
+  const deleteButton = document.createElement("button"); deleteButton.className = "delete-file"; deleteButton.textContent = "Delete"; deleteButton.dataset.tip = "Delete this file from Discord and local storage";
   deleteButton.addEventListener("click", () => deleteFileToken(file));
   const secondaryActions = document.createElement("div"); secondaryActions.className = "secondary-actions";
   secondaryActions.append(copyButton, deleteButton);
@@ -233,6 +268,7 @@ async function copyFileToken(file, button) {
     const symmetricKey = keyData[`${file.sha}.symmetricKey`];
     if (!symmetricKey) throw new Error("token is not stored locally");
     await navigator.clipboard.writeText(`${file.sha}.${symmetricKey}`);
+    flashCopied(button);
     setStatus("File token copied to clipboard.", "ok");
   } catch (error) { setStatus("Copy failed: " + error.message, "err"); }
 }
@@ -327,7 +363,7 @@ async function downloadFile(file) {
 function applyDownloadState(state) {
   if (state.active) {
     activeDownload = state;
-    els.downloadProgress.style.display = "block";
+    els.downloadProgress.classList.add("show");
     const percent = state.phase === "saving" ? 100 : state.totalBytes ? Math.min(100, Math.round((state.done / state.totalBytes) * 100)) : 0;
     els.downloadBar.style.width = percent + "%";
     if (state.phase === "saving") setStatus(`Decrypting and saving ${state.name}…`, "info");
@@ -336,7 +372,7 @@ function applyDownloadState(state) {
     if (activeDownload?.sha === state.sha) activeDownload = null;
     if (state.outcome === "ok") { els.downloadBar.style.width = "100%"; playSound("download"); setStatus(state.text, "ok"); launchFlyer("📦", "drop-in"); }
     else setStatus(state.text, "err");
-    if (!activeDownload) setTimeout(() => { if (!activeDownload) els.downloadProgress.style.display = "none"; }, 1200);
+    if (!activeDownload) setTimeout(() => { if (!activeDownload) els.downloadProgress.classList.remove("show"); }, 1200);
   }
   updateItemButtons();
 }
@@ -365,6 +401,7 @@ els.keyCopy.addEventListener("click", async () => {
     : lastSentToken || (payload ? `${payload.sha}.${payload.symmetricKey}` : "");
   if (!token) { setStatus("Send a file first.", "info"); return; }
   await navigator.clipboard.writeText(token);
+  flashCopied(els.keyCopy);
   setStatus("File token copied to clipboard.", "ok");
 });
 els.loadToken.addEventListener("click", async () => {
@@ -427,7 +464,7 @@ els.send.addEventListener("click", async () => {
   }
   if (!payload) return;
   if (!config.token || !config.channelId) { setStatus("Set the bot token and channel ID first.", "err"); return; }
-  els.send.disabled = true; els.send.textContent = "Starting…"; els.progress.style.display = "block"; els.bar.style.width = "0%";
+  els.send.disabled = true; els.send.textContent = "Starting…"; els.progress.classList.add("show"); els.bar.style.width = "0%";
   const metadata = { sha: payload.sha, name: payload.name, kind: payload.kind, originalSize: payload.originalSize };
   try {
     // File objects cross to the engine by reference; their contents are read there, piece by piece.

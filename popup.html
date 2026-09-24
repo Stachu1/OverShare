@@ -141,28 +141,47 @@
     .pick .drop { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; }
     .pick #folderBtn { width: 96px; flex-shrink: 0; white-space: normal; line-height: 1.3; }
 
+    /* The send button's colour and glow follow its state: gray (nothing picked),
+       green (ready), red (cancel). --glow is the state's colour as RGB. */
     button.send {
-      width: 100%; padding: 10px; background: var(--accent); color: #fff;
+      --btn: #4f5260; --btn-hover: #4f5260; --glow: 79, 82, 96;
+      width: 100%; padding: 10px; background: var(--btn); color: #fff;
       border: none; border-radius: 8px; font-size: 14px; font-weight: 600;
-      cursor: pointer; transition: background 0.15s, transform 0.08s;
+      cursor: pointer; transition: background 0.15s, box-shadow 0.2s, transform 0.08s;
     }
-    button.send:hover:not(:disabled) { background: var(--accent-hover); }
-    /* Green once files are loaded and the button is usable */
-    button.send:not(:disabled):not(.cancel) { background: var(--ok); }
-    button.send:hover:not(:disabled):not(.cancel) { background: #2d8a4c; }
+    button.send:not(:disabled) { --btn: var(--ok); --btn-hover: #2d8a4c; --glow: 59, 165, 93; }
+    button.send.cancel { --btn: var(--err); --btn-hover: #c93b3e; --glow: 237, 66, 69; }
+    button.send:hover:not(:disabled) { background: var(--btn-hover); box-shadow: 0 0 14px rgba(var(--glow), 0.55); }
     button.send.ready { animation: ready-pulse 0.9s ease-out; }
-    @keyframes ready-pulse { 0% { box-shadow: 0 0 0 0 rgba(59, 165, 93, 0.7); } 100% { box-shadow: 0 0 0 12px rgba(59, 165, 93, 0); } }
+    @keyframes ready-pulse { 0% { box-shadow: 0 0 0 0 rgba(var(--glow), 0.7); } 100% { box-shadow: 0 0 0 12px rgba(var(--glow), 0); } }
     button:active:not(:disabled) { transform: scale(0.96); }
-    button.send:disabled { opacity: 0.5; cursor: not-allowed; }
-    /* While sending, the Send button becomes a red Cancel */
-    button.send.cancel { background: var(--err); }
-    button.send.cancel:hover:not(:disabled) { background: #c93b3e; }
+    button.send:disabled { color: #a3a6b1; cursor: not-allowed; }
+    button.send.cancel:disabled { opacity: 0.6; }
+
+    /* Copy buttons flash a glow when the token lands on the clipboard */
+    .copied { animation: copy-glow 0.9s ease-out; }
+    @keyframes copy-glow {
+      0%   { box-shadow: 0 0 0 0 rgba(88, 101, 242, 0.8); border-color: var(--accent); }
+      40%  { box-shadow: 0 0 14px 3px rgba(88, 101, 242, 0.55); border-color: var(--accent); }
+      100% { box-shadow: 0 0 0 0 rgba(88, 101, 242, 0); }
+    }
+
+    /* Hover descriptions for buttons (data-tip), placed by popup.js */
+    .tooltip {
+      position: fixed; z-index: 10; max-width: 220px; padding: 6px 9px;
+      background: #111217; color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+      font-size: 11px; line-height: 1.4; pointer-events: none;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+      opacity: 0; transform: translateY(3px); transition: opacity 0.12s, transform 0.12s;
+    }
+    .tooltip.show { opacity: 1; transform: none; }
 
     /* Controls locked during a send */
     input:disabled, textarea:disabled, select:disabled, button.mini:disabled { opacity: 0.5; cursor: not-allowed; }
     .drop.locked { opacity: 0.5; pointer-events: none; }
 
     .progress { height: 6px; background: var(--panel-2); border-radius: 4px; overflow: hidden; display: none; }
+    .progress.show { display: block; animation: panel-in 0.2s ease-out; }
     .progress .bar {
       height: 100%; width: 0%; background-color: var(--accent); transition: width 0.2s;
       background-image: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.35) 50%, transparent 100%);
@@ -253,7 +272,7 @@
     <span class="dot checking" id="botDot"></span>
     <h1>OverShare</h1>
     <span class="version" id="version"></span>
-    <button class="iconbtn" id="mute" title="Mute sounds">🔊</button>
+    <button class="iconbtn" id="mute" data-tip="Mute or unmute interface sounds">🔊</button>
   </header>
 
   <main>
@@ -267,8 +286,8 @@
     </div>
     <div class="tabs" id="tabs">
       <span class="indicator"></span>
-      <button id="tabSend" class="active">Send</button>
-      <button id="tabDownload">Download</button>
+      <button id="tabSend" class="active" data-tip="Upload files and folders">Send</button>
+      <button id="tabDownload" data-tip="Find and download files you have tokens for">Download</button>
     </div>
 
     <section class="panel active" id="sendPanel">
@@ -276,32 +295,32 @@
         <label>File or folder</label>
         <div class="pick">
           <div class="drop" id="drop"><div id="dropLabel">Click for a file, or drop a file / folder</div></div>
-          <button class="mini" id="folderBtn">📁 Or pick a folder…</button>
+          <button class="mini" id="folderBtn" data-tip="Choose a whole folder to send, keeping its structure">Or pick a folder…</button>
         </div>
         <input type="file" id="file" multiple />
         <input type="file" id="folder" webkitdirectory />
       </div>
       <div>
         <label>File token</label>
-        <div class="row"><button class="mini copy-send-token" id="keyCopy" title="Copy file token">Copy Token</button></div>
+        <div class="row"><button class="mini copy-send-token" id="keyCopy" data-tip="Copy the token of the latest sent file, so someone else can download it">Copy Token</button></div>
         <div class="hint">Copies the file token of the latest sent file.</div>
       </div>
+      <button class="send" id="send" disabled data-tip="Compress, encrypt and upload the selection to Discord">Send</button>
       <div class="progress" id="progress"><div class="bar" id="bar"></div></div>
-      <button class="send" id="send" disabled>Send</button>
     </section>
 
     <section class="panel" id="downloadPanel">
       <!-- <div class="hint">OverShare searches Discord for transfers whose file tokens are stored in this extension.</div> -->
       <div class="row token-actions">
-        <button class="mini" id="exportStorage">Export Tokens</button>
-        <button class="mini" id="importStorage">Import Tokens</button>
-        <button class="mini delete-tokens" id="deleteStorage">Delete Tokens</button>
+        <button class="mini" id="exportStorage" data-tip="Save all stored file tokens to a JSON file">Export Tokens</button>
+        <button class="mini" id="importStorage" data-tip="Add file tokens from an exported JSON file">Import Tokens</button>
+        <button class="mini delete-tokens" id="deleteStorage" data-tip="Delete every stored token and its files from Discord">Delete Tokens</button>
         <input type="file" id="importFile" accept="application/json,.json" />
       </div>
       <label for="downloadToken">File token</label>
       <div class="row">
         <div><input type="password" id="downloadToken" placeholder="Paste a file token" /></div>
-        <button class="mini" id="loadToken">Load</button>
+        <button class="mini" id="loadToken" data-tip="Store this token and look for its file in the channel">Load</button>
       </div>
       <div class="list" id="fileList"><div class="empty">Switch here to search for files.</div></div>
       <div class="progress" id="downloadProgress"><div class="bar" id="downloadBar"></div></div>
@@ -309,6 +328,7 @@
 
   </main>
   <div class="status-footer"><div class="status info" id="status"></div><span class="flyer" id="flyer" aria-hidden="true"></span></div>
+  <div class="tooltip" id="tooltip" role="tooltip"></div>
 
   <script src="shared.js"></script>
   <script src="popup.js"></script>
