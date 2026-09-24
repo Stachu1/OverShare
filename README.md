@@ -1,6 +1,6 @@
 # OverShare
 
-A Chrome/Edge extension for sending large files and folders through Discord using your own bot. Files are compressed, encrypted in the browser, split into chunks and uploaded to a Discord channel. Anyone with the bot token and a file's token can download it and put it back together. No server or other software is needed; everything runs in the extension.
+A Chrome extension for sending large files and folders through Discord using your own bot. Files are compressed, encrypted in the browser, split into chunks and uploaded to a Discord channel. Anyone with the bot token and a file's token can download it and put it back together. No server or other software is needed. Everything runs in the extension.
 
 ## How it works
 
