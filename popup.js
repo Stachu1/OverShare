@@ -43,6 +43,9 @@ function setFolderSelection(fileList) {
   const name = (files[0].webkitRelativePath || files[0].name).split("/")[0];
   selection = { kind: "folder", name, files: files.map((file) => ({ file, path: file.webkitRelativePath || file.name })) }; prepareSelection();
 }
+// Several loose files (or a mix of files and folders) are sent as one bundle named by its file count.
+function setBundleSelection(records) { selection = { kind: "multiplefiles", name: `${records.length}_files`, files: records }; prepareSelection(); }
+const showsSlash = (kind) => kind === "folder" || kind === "multiplefiles";
 // Selecting only picks the transfer ID and key; the engine reads the files while sending.
 function prepareSelection() {
   if (!selection) return;
@@ -53,7 +56,7 @@ function prepareSelection() {
     originalSize: selection.files.reduce((n, r) => n + r.file.size, 0), entries: selection.files.length,
   };
   els.drop.classList.add("has-file");
-  els.dropLabel.innerHTML = `<div class="name">${escapeHtml(selection.name)}${selection.kind === "folder" ? "/" : ""}</div><div class="size">${humanSize(payload.originalSize)} · ${payload.entries} file(s)</div>`;
+  els.dropLabel.innerHTML = `<div class="name">${escapeHtml(selection.name)}${showsSlash(selection.kind) ? "/" : ""}</div><div class="size">${humanSize(payload.originalSize)} · ${payload.entries} file(s)</div>`;
   setStatus("Ready to send.", "ok");
   replayAnimation(els.drop, "pop");
   requestAnimationFrame(() => replayAnimation(els.send, "ready"));
@@ -195,7 +198,7 @@ function renderFiles(files) {
   for (const file of files) {
     const item = document.createElement("div"); item.className = "item"; item.style.setProperty("--i", els.fileList.children.length);
     const meta = document.createElement("div"); meta.className = "meta";
-    const name = document.createElement("div"); name.className = "fname"; name.textContent = file.name + (file.kind === "folder" ? "/" : "");
+    const name = document.createElement("div"); name.className = "fname"; name.textContent = file.name + (showsSlash(file.kind) ? "/" : "");
     const sub = document.createElement("div"); sub.className = file.available ? "sub" : "sub incomplete";
     sub.textContent = file.available ? `${humanSize(file.originalSize)} · ${file.total} chunk(s) · ${file.kind}`
       : file.manifestFound ? `${humanSize(file.originalSize)} · missing ${file.missingChunks} chunk(s)`
@@ -289,15 +292,22 @@ function applyDownloadState(state) {
 }
 
 els.drop.addEventListener("click", () => els.file.click());
-els.file.addEventListener("change", (event) => { const files = [...event.target.files]; if (files.length === 1) setFileSelection(files[0]); else if (files.length) { selection = { kind: "multiplefiles", name: "overshare-bundle", files: files.map((file) => ({ file, path: file.name })) }; prepareSelection(); } });
+els.file.addEventListener("change", (event) => { const files = [...event.target.files]; if (files.length === 1) setFileSelection(files[0]); else if (files.length) setBundleSelection(files.map((file) => ({ file, path: file.name }))); });
 els.folderBtn.addEventListener("click", () => els.folder.click());
 els.folder.addEventListener("change", (event) => setFolderSelection(event.target.files));
 els.drop.addEventListener("dragover", (event) => { event.preventDefault(); els.drop.classList.add("drag"); });
 els.drop.addEventListener("dragleave", () => els.drop.classList.remove("drag"));
 els.drop.addEventListener("drop", async (event) => {
   event.preventDefault(); els.drop.classList.remove("drag"); const items = [...event.dataTransfer.items];
-  if (items[0]?.webkitGetAsEntry) { const records = (await Promise.all(items.map((item) => item.webkitGetAsEntry()).filter(Boolean).map((entry) => readEntry(entry, "")))).flat(); if (records.length === 1 && !records[0].path.includes("/")) setFileSelection(records[0].file); else if (records.length) { selection = { kind: "folder", name: records[0].path.split("/")[0], files: records }; prepareSelection(); } }
-  else if (event.dataTransfer.files.length) { const files = [...event.dataTransfer.files]; if (files.length === 1) setFileSelection(files[0]); else { selection = { kind: "multiplefiles", name: "overshare-bundle", files: files.map((file) => ({ file, path: file.name })) }; prepareSelection(); } }
+  if (items[0]?.webkitGetAsEntry) {
+    const entries = items.map((item) => item.webkitGetAsEntry()).filter(Boolean);
+    const records = (await Promise.all(entries.map((entry) => readEntry(entry, "")))).flat();
+    if (!records.length) return;
+    if (entries.length > 1) setBundleSelection(records);
+    else if (entries[0].isDirectory) { selection = { kind: "folder", name: entries[0].name, files: records }; prepareSelection(); }
+    else setFileSelection(records[0].file);
+  }
+  else if (event.dataTransfer.files.length) { const files = [...event.dataTransfer.files]; if (files.length === 1) setFileSelection(files[0]); else setBundleSelection(files.map((file) => ({ file, path: file.name }))); }
 });
 els.keyCopy.addEventListener("click", async () => {
   // The latest send wins: the one in progress, else the last finished one, else the current selection.
