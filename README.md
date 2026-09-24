@@ -1,101 +1,115 @@
 # OverShare
 
-A Chrome extension for sending large files and folders through Discord using your own bot. Files are compressed, encrypted in the browser, split into chunks and uploaded to a Discord channel. Anyone with the bot token and a file's token can download it and put it back together. No server or other software is needed. Everything runs in the extension.
+OverShare is a Chrome extension for sending large files and folders through Discord using your own Discord bot. Files are compressed, encrypted in the browser with **AES-256-GCM**, split into chunks, and uploaded to a Discord channel.
 
-## How it works
+No separate server or software is required.
 
-**Sending**
+## How It Works
 
-1. Selecting a file or folder picks a random 16-character transfer ID and a new random **AES-256** key. The **file token** is `<id>.<key>`.
-2. The background engine reads the files 4 MB at a time and compresses them into one zip as it goes ([fflate](https://github.com/101arrowz/fflate)). Every file keeps its path inside the folder.
-3. The zip is cut into 20 MB pieces. Each one is encrypted with **AES-256-GCM** and uploaded in its own message as an attachment named `<id>.<n>`. The next piece is compressed and encrypted while the current one uploads, so only about two pieces are in memory at a time, whatever the file size.
-4. When the last piece is up, a manifest message (`OVERSHARE|{name, size, chunk count, …}`) is posted. Uploads keep going if you close the popup.
-5. The file token is saved in the extension. It's the only way to find and decrypt the file, and the key never goes to Discord.
+### Uploading
 
-Each piece's encryption covers the transfer ID, the piece's number and whether it's the last one. A changed, reordered, missing or cut-off piece fails to decrypt instead of producing a damaged file. The manifest carries a tag made with the file's key over the file's name, size and chunk count, so a download refuses a manifest that was changed.
+1. A random transfer ID and **AES-256** encryption key are generated.
+2. Files are streamed and compressed into a ZIP while preserving folder paths.
+3. The ZIP is split into **20 MB chunks**.
+4. Each chunk is encrypted with AES-256-GCM and uploaded to your Discord channel.
+5. A manifest containing the file metadata is uploaded after the chunks.
+6. The resulting **file token** (`<id>.<key>`) is required to decrypt the file.
 
-**Downloading**
+The encryption also protects the order and integrity of the chunks, so modified or missing chunks fail to decrypt.
 
-1. For each file token you have, the extension searches the channel history for the matching manifest and chunks, and shows whether the file is complete. The Download list shows the newest files first, 4 at a time, and reads further back in the channel as you scroll down.
-2. It downloads the pieces one at a time, decrypts each, and unzips as it goes, writing files out as they appear. Folders are written back as folders.
+### Downloading
 
-**Why no server is needed:** Discord rejects bot-token requests that carry a browser `User-Agent`. The extension has a `declarativeNetRequest` rule (`rules.json`) that sets `User-Agent: DiscordBot (…)` on its requests to `discord.com/api/`, so the browser can call the bot API directly. An extension can change this header; an ordinary web page can't.
+The extension searches the configured Discord channel for matching manifests and chunks. Files are decrypted and extracted as they are downloaded.
 
 ## Setup
 
-### 1. Create a separate Discord server
+### 1. Create a Discord Server
 
-Make a new server just for OverShare, with one channel for transfers. Don't reuse a server you use for anything else (see [Security](#security-and-sharing)).
+Create a **separate Discord server** with a private transfer channel. Do not use a server containing unrelated content.
 
-### 2. Create a separate bot
+### 2. Create a Discord Bot
 
-1. Go to the [Discord Developer Portal](https://discord.com/developers/applications), click **New Application**, and give it a name.
-2. Open **Bot**:
-   - Click **Reset Token** and copy the token. You'll only see it once.
-   - Turn **Public Bot** off, so only you can add it to servers.
-   - You don't need **Message Content Intent**: the bot only reads its own messages.
-3. Open **OAuth2 → URL Generator**:
-   - Scopes: `bot`
-   - Bot permissions: **View Channels**, **Send Messages**, **Attach Files**, **Read Message History**
-   - Open the generated URL and add the bot to your new server. Don't add it to any other server.
+Go to the [Discord Developer Portal](https://discord.com/developers/applications) and:
 
-### 3. Get the channel ID
+- Create a new application and bot.
+- Copy the bot token and keep it private.
+- Disable **Public Bot**.
+- Message Content Intent is not required.
+- Generate an OAuth2 invite with:
+  - View Channels
+  - Send Messages
+  - Attach Files
+  - Read Message History
+- Add the bot only to your OverShare server.
 
-In Discord, go to **User Settings → Advanced** and turn on **Developer Mode**. Then right-click your transfer channel and choose **Copy Channel ID**.
+### 3. Get the Channel ID
 
-### 4. Install the extension
+Enable **Developer Mode** in Discord, then right-click your transfer channel and select **Copy Channel ID**.
 
-1. Open `chrome://extensions` (or `edge://extensions`) and turn on **Developer mode**.
-2. Click **Load unpacked** and choose this folder.
-3. Open the OverShare popup. The first time, Settings opens with a new configuration form: enter a name, the bot token and the channel ID, and click **Save**. The dot in the header turns green when the bot can reach the channel, and the Send tab shows **Connected as `<bot>` · `#<channel>`**.
+### 4. Install OverShare
 
-## Use
+1. Open `chrome://extensions` or `edge://extensions`.
+2. Enable **Developer mode**.
+3. Select **Load unpacked**.
+4. Choose the OverShare folder.
+5. Open the extension and enter your **bot token** and **channel ID**.
 
-- **Send:** drop a file or folder on the popup, or click to pick one, then click **Send**. When it finishes, copy the file token with **Copy Token** or from the Download list.
-- **Download:** open the Download tab. Files whose tokens you have are listed automatically. Paste a token someone sent you and click **Load** to add it.
-- **Export / Import Tokens** backs up the current configuration's file tokens as a JSON file. The bot token and channel ID aren't included.
-- **Configurations** (⚙️ in the header): each configuration is one bot token and channel, with its own file tokens. Click one in the list to use it, or add one with **New Configuration**. Each configuration's **Edit** changes its name, bot token or channel ID. **Export** saves its bot token, channel ID and all its file tokens to one JSON file; drop that file on the import area in Settings (or click it) to add it back, on another computer, say. **Delete** removes the configuration and its file tokens from the extension only; its files stay on Discord. Settings from versions before 5.0 become a configuration named "Default".
-- **Delete** removes a file's messages from Discord and its token from the extension.
+## Usage
 
-## Security and sharing
+- **Send:** Drop a file or folder into the popup and click **Send**.
+- **Download:** Open the Download tab and provide a file token if necessary.
+- **Copy Token:** Save or share the token with someone who should access that file.
+- **Export / Import Tokens:** Back up your file tokens as JSON.
+- **Delete:** Removes the transfer from Discord and removes its local token.
 
-Two secrets matter, and they protect different things.
+## Security
 
-| Secret | What someone who has it can do |
+There are two important secrets:
+
+| Secret | Access |
 |---|---|
-| **Bot token** | Everything the bot can do: read, post and delete messages in every channel it can see, and change the bot's profile. They can see and delete every OverShare transfer. They **can't** decrypt a file without its file token. |
-| **File token** | Decrypt that one file, if they can also get the encrypted chunks: with the bot token, or as a member of the server who can see the channel. |
+| **Bot token** | Allows control of everything the bot can access, including reading, uploading, and deleting messages. |
+| **File token** | Allows decryption of the specific file it belongs to. |
 
-This is why OverShare should have **its own bot and its own server**:
+Important security considerations:
 
-- Keep the bot in the OverShare server only. If the token leaks, all anyone can reach is that server's transfer channel, not your other communities or anything else the bot could see.
-- **Only give the bot token to friends you trust.** Every friend using OverShare needs the same bot token and channel ID. Each of them can delete everyone's transfers, and anyone they pass the token to can too.
-- **Only give a file token to people who should get that file.** Having the bot token doesn't let someone read your files; each file needs its own token.
-- Anyone in the server who can see the channel can download the encrypted chunks, but can't read them without the file token. Keep the server small, or make the channel private to the bot.
-- Send tokens over something private, like a DM, not a public channel.
-- The bot token is stored unencrypted in the extension's local storage. Only install OverShare on computers you trust.
-- If the bot token leaks, go to the Developer Portal, open **Bot**, and click **Reset Token**. The old token stops working immediately; give the new one to your friends.
-- Token export files contain the keys to your files, so keep them as private as the tokens. Configuration exports also contain the bot token.
+- Use a dedicated bot and server.
+- Never publish or share the bot token publicly.
+- Only share file tokens with people who should access the corresponding file.
+- Anyone with the bot token may be able to delete OverShare transfers.
+- The bot token is stored unencrypted in the extension's local storage.
+- Keep token-export files private because they contain your file encryption keys.
+- If the bot token is compromised, reset it immediately in the Discord Developer Portal.
 
-## Limits and good to know
+## Limits and Notes
 
-- Chunks are 20 MB. If sending fails with a `413` error, your server's upload limit is lower than that.
-- Memory use stays about the same whatever the file size (about two 20 MB pieces plus working buffers), because files are read, compressed, encrypted and uploaded a piece at a time. Chrome frees used buffers lazily, so its Task Manager can show more than that during a send.
-- Transfers sent with versions before 4.0 use an older format and can't be downloaded any more; they show as missing, and you can still delete them.
-- Sends, downloads and deletes run in the background and keep going after you close the popup. Closing the browser stops them.
-- Cancelling or a failed send removes the chunks already sent. So does a send cut off by closing the browser: its leftovers are removed the next time the browser starts. If that cleanup can't reach Discord, the partial file stays in the Download list so you can delete it there.
-- For a folder download, the popup asks where to save before the download starts. If the browser doesn't keep write access to that folder once the popup closes, the folder is saved as a zip instead.
-- The file list and delete read up to the latest 10,000 messages in the channel.
-- Discord rate-limits bots. OverShare waits and retries automatically, which can slow down large transfers.
+- Chunks are **20 MB**. Discord/server upload limits may require a smaller size.
+- Large transfers use streaming to reduce memory usage.
+- Discord rate limits may slow transfers; OverShare automatically retries.
+- Closing the popup does not stop transfers, but closing the browser does.
+- Interrupted or partial uploads are cleaned up when possible.
+- Transfers from versions before **4.0** are no longer downloadable.
+- The file list and deletion system search up to the latest **10,000 messages**.
+- Folder downloads may be saved as a ZIP if the browser cannot maintain folder write access.
 
-## Project layout
+## Project Structure
 
 | File | Purpose |
 |---|---|
-| `manifest.json` | Extension manifest (MV3) |
-| `rules.json` | Sets the `DiscordBot` User-Agent on Discord API requests |
-| `popup.html`, `popup.js` | The popup: file selection, settings, file list, progress |
-| `offscreen.html`, `engine.js` | Background engine: streams sends (zip, encrypt, upload) and downloads, runs deletes, cleans up partial sends |
-| `background.js` | Service worker: starts the engine (also after a restart with an interrupted send) and saves files and storage for it |
-| `shared.js` | Discord API client, transfer search, delete, download and decrypt, and speed/ETA helpers |
-| `fflate.js` | Zip library |
+| `manifest.json` | Chrome extension manifest |
+| `rules.json` | Discord API request configuration |
+| `popup.html`, `popup.js` | Extension interface |
+| `offscreen.html`, `engine.js` | Compression, encryption, uploads, and downloads |
+| `background.js` | Service worker and background tasks |
+| `shared.js` | Discord API, transfer, and decryption utilities |
+| `fflate.js` | ZIP/compression library |
+
+## Disclaimer
+
+**For educational purposes only.**
+
+OverShare is provided for learning, experimentation, and authorized use only. Do not use this project to abuse Discord, bypass platform restrictions, distribute unauthorized content, access data you do not own, or violate Discord's Terms of Service or applicable laws.
+
+Misuse may result in account or server bans, suspension, loss of access, or other consequences. You are responsible for how you use this project and for complying with all applicable laws, rules, and terms of service.
+
+The authors are not responsible for misuse, account bans, lost data, security issues, or any other consequences resulting from the use of this project.
