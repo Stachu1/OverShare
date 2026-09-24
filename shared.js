@@ -149,8 +149,9 @@ async function findTransfers(config, keys) {
   return { files, found };
 }
 
-// Deletes every message that mentions one of the SHAs or carries one of their chunks.
-async function deleteTransfers(config, shas) {
+// Deletes every message that mentions one of the SHAs or carries one of their
+// chunks. onProgress receives the number deleted so far.
+async function deleteTransfers(config, shas, onProgress) {
   const wanted = new Set(shas);
   if (!wanted.size) return 0;
   let deleted = 0;
@@ -160,6 +161,7 @@ async function deleteTransfers(config, shas) {
     if (matches) {
       await discordRequest(config, "DELETE", `/channels/${config.channelId}/messages/${message.id}`);
       deleted++;
+      onProgress?.(deleted);
     }
   }
   return deleted;

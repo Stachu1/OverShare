@@ -77,7 +77,9 @@ This is why OverShare should have **its own bot and its own server**:
 ## Limits and good to know
 
 - Chunks are 20 MB. If sending fails with a `413` error, your server's upload limit is lower than that.
-- Downloads run in the popup, so keep it open until the download finishes. Uploads keep going with the popup closed, but not if the browser closes.
+- Sends, downloads and deletes run in the background and keep going after you close the popup. Closing the browser stops them.
+- Cancelling or a failed send removes the chunks already sent. So does a send cut off by closing the browser: its leftovers are removed the next time the browser starts. If that cleanup can't reach Discord, the partial file stays in the Download list so you can delete it there.
+- For a folder download, the popup asks where to save before the download starts. If the browser doesn't keep write access to that folder once the popup closes, the folder is saved as a zip instead.
 - The file list and delete read up to the latest 10,000 messages in the channel.
 - Discord rate-limits bots. OverShare waits and retries automatically, which can slow down large transfers.
 
@@ -87,8 +89,8 @@ This is why OverShare should have **its own bot and its own server**:
 |---|---|
 | `manifest.json` | Extension manifest (MV3) |
 | `rules.json` | Sets the `DiscordBot` User-Agent on Discord API requests |
-| `popup.html`, `popup.js` | The popup: compression, encryption, file list, downloads |
-| `offscreen.html`, `engine.js` | Background engine that uploads chunks while the popup is closed |
-| `background.js` | Service worker: starts the engine; handles downloads and storage for it |
+| `popup.html`, `popup.js` | The popup: compression, encryption, file list, progress |
+| `offscreen.html`, `engine.js` | Background engine: runs sends, downloads and deletes, and cleans up partial sends |
+| `background.js` | Service worker: starts the engine (also after a restart with an interrupted send) and saves files and storage for it |
 | `shared.js` | Discord API client, transfer search, delete, download and decrypt, and speed/ETA helpers |
 | `fflate.js` | Zip library |

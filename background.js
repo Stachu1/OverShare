@@ -19,6 +19,13 @@ async function ensureEngine() {
   await creating;
 }
 
+// A stored activeUpload after a restart means a send was interrupted; start the
+// engine so it removes the sent chunks without waiting for the popup.
+chrome.runtime.onStartup.addListener(async () => {
+  const { activeUpload } = await chrome.storage.local.get("activeUpload");
+  if (activeUpload) ensureEngine().catch(() => {});
+});
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg || msg.target !== "background") return;
   if (msg.type === "ensureEngine") {

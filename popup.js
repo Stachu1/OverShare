@@ -9,6 +9,9 @@ let payload = null;
 let preparing = false;
 let muted = false;
 let activeUpload = null;
+let activeDownload = null;
+let deletingShas = new Set();
+const itemControls = new Map(); // sha -> the rendered list row and its buttons
 let config = { token: "", channelId: "" };
 let botCheckRun = 0;
 let botCheckTimer = 0;
@@ -68,7 +71,7 @@ async function prepareSelection() {
 }
 function refreshSendState() {
   if (activeUpload) {
-    els.send.disabled = false;
+    els.send.disabled = !!activeUpload.canceling;
     els.send.textContent = activeUpload.canceling ? "Canceling…" : "Cancel";
     els.send.classList.add("cancel");
     return;
@@ -90,26 +93,20 @@ function applyUploadState(state) {
       : Math.min(100, Math.round(((state.sent || 0) / (state.total || 1)) * 100));
     els.bar.style.width = percent + "%";
     const chunk = `chunk ${Math.min((state.sent || 0) + 1, state.total || 1)}/${state.total || 1}`;
-    setStatus(state.canceling ? `Canceling upload… ${percent}%` : `Sending ${chunk} · ${percent}% · ${transferStats(state)}`, "info");
-  } else if (activeUpload) {
+    if (state.cleaning) setStatus(`Removing sent chunks of ${state.name}…`, "info");
+    else if (state.canceling) setStatus(`Canceling upload… ${percent}%`, "info");
+    else setStatus(`Sending ${chunk} · ${percent}% · ${transferStats(state)}`, "info");
+    refreshSendState();
+  } else if (activeUpload || state.outcome === "interrupted") {
     // An idle reply can race a send this popup just started; only a restored upload should be cleared by it.
     if (state.idle && !activeUpload.restored) return;
     const old = activeUpload;
     activeUpload = null;
     resetUploadProgress();
     refreshSendState();
+    if (state.idle) return;
     if (state.outcome === "ok") { playSound("send"); setStatus(`Sent ${state.name || old.name}: ${state.total || old.total} chunk(s) 🚀`, "ok"); launchFlyer("🚀", "fly"); }
-    else if (state.outcome === "canceled") {
-      if (state.error?.includes("cleanup failed")) setStatus(state.error, "err");
-      else setStatus("Upload canceled and partial Discord messages removed.", "info");
-    }
-    else if (state.outcome === "error") setStatus("Send failed: " + (state.error || "Upload failed"), "err");
-    else if (state.idle && old.restored) {
-      // The engine has no upload, but storage says one was running: the browser
-      // closed mid-send. Its partial messages stay until the file is deleted.
-      chrome.storage.local.remove(["activeUpload"]);
-      setStatus(`Upload of ${old.name} was interrupted. Send it again.`, "err");
-    }
+    else setStatus(state.text || "Upload failed", state.failed ? "err" : "info");
   }
 }
 
@@ -185,8 +182,19 @@ async function storedKeys() {
   const data = await chrome.storage.local.get(null);
   return Object.entries(data).filter(([name, value]) => name.endsWith(".symmetricKey") && typeof value === "string").map(([name, value]) => `${name.slice(0, -13)}.${value}`);
 }
+function updateItemButtons() {
+  for (const [sha, { file, downloadButton, deleteButton }] of itemControls) {
+    const downloading = activeDownload?.sha === sha, deleting = deletingShas.has(sha);
+    downloadButton.disabled = !file.available || !!activeDownload || deleting;
+    downloadButton.textContent = downloading ? "Downloading…" : "Download";
+    deleteButton.disabled = deleting || downloading;
+    deleteButton.textContent = deleting ? "Deleting…" : "Delete";
+  }
+  els.deleteStorage.disabled = deletingShas.size > 0;
+}
 function renderFiles(files) {
   els.fileList.textContent = "";
+  itemControls.clear();
   if (!files.length) { els.fileList.innerHTML = '<div class="empty">No complete files found.</div>'; return; }
   for (const file of files) {
     const item = document.createElement("div"); item.className = "item"; item.style.setProperty("--i", els.fileList.children.length);
@@ -196,15 +204,17 @@ function renderFiles(files) {
     sub.textContent = file.available ? `${humanSize(file.originalSize)} · ${file.total} chunk(s) · ${file.kind}` : file.manifestFound ? `${humanSize(file.originalSize)} · missing ${file.missingChunks} chunk(s)` : "missing from channel";
     meta.append(name, sub);
     const actions = document.createElement("div"); actions.className = "item-actions";
-    const button = document.createElement("button"); button.textContent = "Download"; button.disabled = !file.available; button.addEventListener("click", () => downloadFile(file, button));
+    const button = document.createElement("button"); button.textContent = "Download"; button.addEventListener("click", () => downloadFile(file));
     const copyButton = document.createElement("button"); copyButton.className = "copy-token"; copyButton.textContent = "Copy"; copyButton.title = "Copy file token";
     copyButton.addEventListener("click", () => copyFileToken(file, copyButton));
     const deleteButton = document.createElement("button"); deleteButton.className = "delete-file"; deleteButton.textContent = "Delete"; deleteButton.title = "Delete this file from Discord and local storage";
-    deleteButton.addEventListener("click", () => deleteFileToken(file, deleteButton));
+    deleteButton.addEventListener("click", () => deleteFileToken(file));
     const secondaryActions = document.createElement("div"); secondaryActions.className = "secondary-actions";
     secondaryActions.append(copyButton, deleteButton);
     actions.append(button, secondaryActions); item.append(meta, actions); els.fileList.appendChild(item);
+    itemControls.set(file.sha, { file, item, downloadButton: button, deleteButton });
   }
+  updateItemButtons();
 }
 async function copyFileToken(file, button) {
   try {
@@ -215,25 +225,32 @@ async function copyFileToken(file, button) {
     setStatus("File token copied to clipboard.", "ok");
   } catch (error) { setStatus("Copy failed: " + error.message, "err"); }
 }
-async function deleteFileToken(file, button) {
+async function deleteFileToken(file) {
   const keyData = await chrome.storage.local.get(`${file.sha}.symmetricKey`);
-  const symmetricKey = keyData[`${file.sha}.symmetricKey`];
-  if (!symmetricKey) { setStatus("Delete failed: token is not stored locally.", "err"); return; }
+  if (!keyData[`${file.sha}.symmetricKey`]) { setStatus("Delete failed: token is not stored locally.", "err"); return; }
   if (!confirm(`Delete "${file.name}" from Discord and local storage? This cannot be undone.`)) return;
-  button.disabled = true;
-  try {
-    requireConfig();
-    await deleteTransfers(config, [file.sha]);
-    await chrome.storage.local.remove([`${file.sha}.symmetricKey`]);
-    const data = await chrome.storage.local.get(["lastFileToken", "lastKey"]);
-    const token = `${file.sha}.${symmetricKey}`;
-    await chrome.storage.local.remove([...(data.lastFileToken === token ? ["lastFileToken"] : []), ...(data.lastKey === token ? ["lastKey"] : [])]);
-    setStatus(`Deleted ${file.name}.`, "ok");
-    const item = button.closest(".item");
-    item?.classList.add("removing");
-    setTimeout(refreshFiles, item ? 280 : 0);
-  } catch (error) { setStatus("Delete failed: " + error.message, "err"); }
-  finally { button.disabled = false; }
+  try { requireConfig(); } catch (error) { setStatus("Delete failed: " + error.message, "err"); return; }
+  startDelete([file.sha], file.name);
+}
+// Deletes run in the engine, so they finish even if the popup closes.
+function startDelete(shas, label) {
+  deletingShas = new Set([...deletingShas, ...shas]);
+  updateItemButtons();
+  setStatus(`Deleting ${label}…`, "info");
+  transferChannel.postMessage({ type: "startDelete", job: { config, shas, label } });
+}
+function applyDeleteState(state) {
+  deletingShas = new Set(state.pendingShas || []);
+  if (state.finished) {
+    const { outcome, shas, text } = state.finished;
+    setStatus(text, outcome === "ok" ? "ok" : "err");
+    if (outcome === "ok" && els.downloadPanel.classList.contains("active")) {
+      const rows = shas.map((sha) => itemControls.get(sha)?.item).filter(Boolean);
+      rows.forEach((row) => row.classList.add("removing"));
+      setTimeout(refreshFiles, rows.length ? 280 : 0);
+    }
+  } else if (state.current) setStatus(`Deleting ${state.current.label}… ${state.current.deleted} message(s) removed`, "info");
+  updateItemButtons();
 }
 async function refreshFiles() {
   if (!config.token || !config.channelId) { els.fileList.innerHTML = '<div class="empty">Set the bot token and channel ID first.</div>'; return; }
@@ -242,47 +259,35 @@ async function refreshFiles() {
     const { files } = await findTransfers(config, await storedKeys()); renderFiles(files); const complete = files.filter((file) => file.available).length; const incomplete = files.length - complete; setStatus(`${complete} complete, ${incomplete} incomplete file(s).`, incomplete ? "info" : "ok");
   } catch (error) { els.fileList.innerHTML = '<div class="empty">Could not search for files.</div>'; setStatus("Search failed: " + error.message, "err"); }
 }
-async function saveBytes(bytes, filename) {
-  const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
-  const result = await chrome.runtime.sendMessage({ target: "background", type: "download", url, filename, saveAs: true });
-  setTimeout(() => URL.revokeObjectURL(url), 10 * 60 * 1000);
-  if (result?.error) throw new Error(result.error);
-}
-async function saveFolder(dirHandle, files) {
-  for (const [path, bytes] of Object.entries(files)) {
-    if (path.endsWith("/")) continue;
-    const segments = path.split("/"); const filename = segments.pop(); let current = dirHandle;
-    for (const segment of segments) if (segment) current = await current.getDirectoryHandle(segment, { create: true });
-    const handle = await current.getFileHandle(filename, { create: true }); const writer = await handle.createWritable(); await writer.write(bytes); await writer.close();
-  }
-}
-async function downloadFile(file, button) {
-  button.disabled = true; button.textContent = "Downloading…";
-  els.downloadProgress.style.display = "block"; els.downloadBar.style.width = "0%";
-  let dirHandle = null;
+// Downloads run in the engine, so they finish even if the popup closes. A folder
+// is picked here first, because the folder picker needs a click in this page.
+async function downloadFile(file) {
   try {
+    requireConfig();
+    let dirHandle = null;
     if (file.kind === "folder" && window.showDirectoryPicker) dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
     const keyData = await chrome.storage.local.get(`${file.sha}.symmetricKey`);
     const key = `${file.sha}.${keyData[`${file.sha}.symmetricKey`]}`;
-    requireConfig();
-    let meter = null, lastUpdate = 0;
-    setStatus(`Downloading ${file.name}…`, "info");
-    const { zip } = await downloadTransfer(config, key, (done, totalBytes) => {
-      meter ??= new TransferMeter(totalBytes);
-      const stats = meter.update(done);
-      const percent = Math.min(100, Math.round((done / totalBytes) * 100));
-      els.downloadBar.style.width = percent + "%";
-      if (performance.now() - lastUpdate < 250 && done < totalBytes) return;
-      lastUpdate = performance.now();
-      setStatus(`Downloading ${file.name} · ${percent}% · ${transferStats(stats)}`, "info");
-    });
-    setStatus(`Decrypting ${file.name}…`, "info"); const entries = fflate.unzipSync(zip); const names = Object.keys(entries).filter((name) => !name.endsWith("/"));
-    if (dirHandle) await saveFolder(dirHandle, entries);
-    else if (file.kind === "file" && names.length === 1) await saveBytes(entries[names[0]], names[0].split("/").pop());
-    else await saveBytes(zip, file.name.replace(/\/$/, "") + ".zip");
-    els.downloadBar.style.width = "100%"; playSound("download"); setStatus(`Downloaded ${file.name} ✓`, "ok"); launchFlyer("📦", "drop-in");
+    activeDownload = { active: true, sha: file.sha, name: file.name, phase: "downloading", done: 0, totalBytes: 0 };
+    applyDownloadState(activeDownload);
+    transferChannel.postMessage({ type: "startDownload", job: { config, key, sha: file.sha, name: file.name, kind: file.kind, dirHandle } });
   } catch (error) { if (error.name !== "AbortError") setStatus("Download failed: " + error.message, "err"); }
-  finally { button.disabled = false; button.textContent = "Download"; setTimeout(() => { els.downloadProgress.style.display = "none"; }, 1200); }
+}
+function applyDownloadState(state) {
+  if (state.active) {
+    activeDownload = state;
+    els.downloadProgress.style.display = "block";
+    const percent = state.phase === "saving" ? 100 : state.totalBytes ? Math.min(100, Math.round((state.done / state.totalBytes) * 100)) : 0;
+    els.downloadBar.style.width = percent + "%";
+    if (state.phase === "saving") setStatus(`Decrypting and saving ${state.name}…`, "info");
+    else setStatus(`Downloading ${state.name} · ${percent}% · ${transferStats(state)}`, "info");
+  } else {
+    if (activeDownload?.sha === state.sha) activeDownload = null;
+    if (state.outcome === "ok") { els.downloadBar.style.width = "100%"; playSound("download"); setStatus(state.text, "ok"); launchFlyer("📦", "drop-in"); }
+    else setStatus(state.text, "err");
+    if (!activeDownload) setTimeout(() => { if (!activeDownload) els.downloadProgress.style.display = "none"; }, 1200);
+  }
+  updateItemButtons();
 }
 
 els.drop.addEventListener("click", () => els.file.click());
@@ -338,17 +343,9 @@ els.deleteStorage.addEventListener("click", async () => {
   const tokens = await storedKeys();
   if (!tokens.length) { setStatus("No stored file tokens to delete.", "info"); return; }
   if (!confirm(`Delete ${tokens.length} file token(s) and their Discord files? This cannot be undone.`)) return;
-  els.deleteStorage.disabled = true;
-  try {
-    requireConfig();
-    const deleted = await deleteTransfers(config, [...shasFromKeys(tokens)]);
-    const data = await chrome.storage.local.get(null);
-    const removals = Object.keys(data).filter((name) => name.endsWith(".symmetricKey") || name === "lastFileToken" || name === "lastKey");
-    await chrome.storage.local.remove(removals);
-    els.downloadToken.value = ""; els.fileList.innerHTML = '<div class="empty">No stored file tokens.</div>';
-    setStatus(`Deleted ${deleted} Discord file message(s) and local token(s).`, "ok");
-  } catch (error) { setStatus("Delete failed: " + error.message, "err"); }
-  finally { els.deleteStorage.disabled = false; }
+  try { requireConfig(); } catch (error) { setStatus("Delete failed: " + error.message, "err"); return; }
+  els.downloadToken.value = "";
+  startDelete([...shasFromKeys(tokens)], `${tokens.length} file(s)`);
 });
 els.mute.addEventListener("click", () => {
   muted = !muted;
@@ -376,7 +373,12 @@ els.send.addEventListener("click", async () => {
 });
 els.tabSend.addEventListener("click", () => showTab(false)); els.tabDownload.addEventListener("click", () => showTab(true));
 const transferChannel = new BroadcastChannel("overshare");
-transferChannel.onmessage = (event) => { if (event.data?.type === "uploadState") applyUploadState(event.data.send); };
+transferChannel.onmessage = (event) => {
+  const message = event.data || {};
+  if (message.type === "uploadState") applyUploadState(message.send);
+  else if (message.type === "downloadState") applyDownloadState(message.state);
+  else if (message.type === "deleteState") applyDeleteState(message.state);
+};
 els.botToken.addEventListener("input", onBotInput);
 els.channelId.addEventListener("input", onBotInput);
 chrome.storage.local.get(["activeUpload", "muted", ...SETTINGS_KEYS], (data) => {
