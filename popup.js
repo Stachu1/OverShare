@@ -141,7 +141,7 @@ document.addEventListener("mouseover", (event) => {
   hideTip();
   if (!target) return;
   tipTarget = target;
-  tipTimer = setTimeout(() => showTip(target), 2500);
+  tipTimer = setTimeout(() => showTip(target), 1000);
 });
 document.addEventListener("mousedown", hideTip);
 document.addEventListener("scroll", hideTip, true);
