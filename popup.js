@@ -210,12 +210,12 @@ function fileRow(file, position) {
   sub.textContent = file.available ? `${humanSize(file.originalSize)} · ${file.total} chunk(s) · ${file.kind}`
     : file.manifestFound ? `${humanSize(file.originalSize)} · missing ${file.missingChunks} chunk(s)`
     : file.orphanChunks ? `upload never finished · ${file.orphanChunks} chunk(s) left behind` : "missing from channel";
-  if (file.sentAt) {
-    const when = document.createElement("span"); when.className = "sent-at"; when.dataset.time = file.sentAt;
-    when.textContent = " · " + timeAgo(file.sentAt); when.title = new Date(file.sentAt).toLocaleString();
-    sub.append(when);
-  }
   meta.append(name, sub);
+  if (file.sentAt) {
+    const when = document.createElement("div"); when.className = "sub sent-at"; when.dataset.time = file.sentAt;
+    when.textContent = timeAgo(file.sentAt); when.title = new Date(file.sentAt).toLocaleString();
+    meta.append(when);
+  }
   const actions = document.createElement("div"); actions.className = "item-actions";
   const button = document.createElement("button"); button.textContent = "Download"; button.addEventListener("click", () => downloadFile(file));
   const copyButton = document.createElement("button"); copyButton.className = "copy-token"; copyButton.textContent = "Copy"; copyButton.title = "Copy file token";
@@ -441,7 +441,7 @@ els.send.addEventListener("click", async () => {
 });
 els.fileList.addEventListener("scroll", loadIfAtBottom);
 // Keeps the "5min ago" labels current while the popup stays open.
-setInterval(() => { for (const when of els.fileList.querySelectorAll(".sent-at")) when.textContent = " · " + timeAgo(Number(when.dataset.time)); }, 60000);
+setInterval(() => { for (const when of els.fileList.querySelectorAll(".sent-at")) when.textContent = timeAgo(Number(when.dataset.time)); }, 60000);
 els.tabSend.addEventListener("click", () => showTab(false)); els.tabDownload.addEventListener("click", () => showTab(true));
 const transferChannel = new BroadcastChannel("overshare");
 transferChannel.onmessage = (event) => {
