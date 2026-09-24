@@ -4,6 +4,9 @@ OverShare is a Chrome extension for sending large files and folders through Disc
 
 No separate server or software is required.
 
+<img width="400" height="640" alt="image" src="https://github.com/user-attachments/assets/30ef4129-3cd4-4096-bc79-fe21474e0dcd" />
+
+
 ## How It Works
 
 ### Uploading
