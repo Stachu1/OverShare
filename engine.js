@@ -92,6 +92,7 @@ async function uploadFiles(job) {
 	const record = { name, sha, symmetricKey: job.symmetricKey, total: null, config };
 	active = { name, sent: 0, total: null, bytesSent: 0, totalBytes: originalSize, meter: new TransferMeter(originalSize), cleaning: false };
 	abortController = new AbortController();
+	const startedAt = performance.now();
 	const path = `/channels/${config.channelId}/messages`;
 	try {
 		// Stored first, so a browser restart mid-send can still find and remove the chunks.
@@ -171,7 +172,8 @@ async function uploadFiles(job) {
 		await discordRequest(config, "POST", path, { json: { content: MANIFEST_MARKER + JSON.stringify(manifest) }, signal: abortController.signal });
 		await storage("set", { [`${sha}.symmetricKey`]: job.symmetricKey, lastFileToken: `${sha}.${job.symmetricKey}` });
 		await storage("remove", ["activeUpload"]);
-		publish({ active: false, outcome: "ok", name, total: index });
+		const seconds = (performance.now() - startedAt) / 1000;
+		publish({ active: false, outcome: "ok", name, total: index, size: originalSize, speed: seconds > 0 ? originalSize / seconds : 0 });
 	} catch (error) {
 		const canceled = cancelRequested || error.name === "AbortError";
 		active.cleaning = true;
