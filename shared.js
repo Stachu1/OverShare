@@ -27,6 +27,34 @@ function base64urlDecode(value) {
   return Uint8Array.from(binary, (c) => c.charCodeAt(0));
 }
 
+function formatDuration(seconds) {
+  if (seconds == null || !isFinite(seconds)) return "…";
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+  return `${Math.floor(s / 3600)}h ${String(Math.floor(s / 60) % 60).padStart(2, "0")}m`;
+}
+
+// Speed over the last few seconds, so it follows the current rate rather than
+// the average since the start.
+class TransferMeter {
+  constructor(totalBytes, windowMs = 5000) { this.total = totalBytes; this.windowMs = windowMs; this.samples = [{ t: performance.now(), bytes: 0 }]; }
+  update(bytesDone) {
+    const now = performance.now();
+    this.samples.push({ t: now, bytes: bytesDone });
+    while (this.samples.length > 2 && now - this.samples[1].t > this.windowMs) this.samples.shift();
+    const first = this.samples[0], elapsed = (now - first.t) / 1000;
+    const speed = elapsed >= 0.5 ? (bytesDone - first.bytes) / elapsed : 0;
+    return { speed, eta: speed > 0 ? (this.total - bytesDone) / speed : null };
+  }
+}
+function transferStats({ speed, eta }) { return speed ? `${humanSize(speed)}/s · ${formatDuration(eta)} left` : "measuring speed…"; }
+
+function discordError(status, data, statusText) {
+  return new Error(`Discord ${status}: ${data?.message || statusText}${data?.code ? ` (code ${data.code})` : ""}`);
+}
+function parseJson(text) { try { return JSON.parse(text); } catch (_) { return null; } }
+
 // config = { token, channelId }. Retries on rate limits; a DELETE of a missing
 // message counts as done.
 async function discordRequest(config, method, path, { json, form, signal } = {}) {
@@ -44,11 +72,34 @@ async function discordRequest(config, method, path, { json, form, signal } = {})
       continue;
     }
     if (method === "DELETE" && response.status === 404) return null;
-    if (!response.ok) {
-      const data = await response.json().catch(() => null);
-      throw new Error(`Discord ${response.status}: ${data?.message || response.statusText}${data?.code ? ` (code ${data.code})` : ""}`);
-    }
+    if (!response.ok) throw discordError(response.status, await response.json().catch(() => null), response.statusText);
     return response.status === 204 ? null : response.json();
+  }
+}
+
+// Multipart POST through XMLHttpRequest, since fetch can't report upload
+// progress. onProgress receives the bytes of the body sent so far.
+async function discordUpload(config, path, form, { signal, onProgress } = {}) {
+  for (;;) {
+    const xhr = await new Promise((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      request.open("POST", `${API}${path}`);
+      request.setRequestHeader("Authorization", `Bot ${config.token}`);
+      request.upload.onprogress = (event) => onProgress?.(event.loaded);
+      request.onload = () => resolve(request);
+      request.onerror = () => reject(new Error("Network error while uploading"));
+      request.onabort = () => reject(new DOMException("Upload canceled", "AbortError"));
+      if (signal?.aborted) return reject(new DOMException("Upload canceled", "AbortError"));
+      signal?.addEventListener("abort", () => request.abort(), { once: true });
+      request.send(form);
+    });
+    const data = parseJson(xhr.responseText);
+    if (xhr.status === 429) {
+      await new Promise((resolve) => setTimeout(resolve, Number(data?.retry_after || 1) * 1000));
+      continue;
+    }
+    if (xhr.status < 200 || xhr.status >= 300) throw discordError(xhr.status, data, xhr.statusText);
+    return data;
   }
 }
 
@@ -114,7 +165,7 @@ async function deleteTransfers(config, shas) {
   return deleted;
 }
 
-// Downloads, verifies and decrypts a transfer. onProgress receives 0-100.
+// Downloads, verifies and decrypts a transfer. onProgress receives (bytesDone, totalBytes).
 async function downloadTransfer(config, key, onProgress) {
   const [sha, encodedKey] = key.split(".", 2);
   if (!sha || !encodedKey) throw new Error("invalid file token");
@@ -122,16 +173,21 @@ async function downloadTransfer(config, key, onProgress) {
   const item = found[sha];
   if (!item) throw new Error("file manifest not found");
   const total = Number(item.manifest.total);
+  const expected = Number(item.manifest.encryptedSize) || 0;
   const chunks = [];
   let received = 0;
   for (let index = 1; index <= total; index++) {
     if (!item.parts[index]) throw new Error("not all chunks are available");
     const response = await fetch(item.parts[index].url);
     if (!response.ok) throw new Error(`chunk ${index} download failed: HTTP ${response.status}`);
-    const chunk = new Uint8Array(await response.arrayBuffer());
-    chunks.push(chunk);
-    received += chunk.length;
-    onProgress(Math.min(100, Math.round((received / (item.manifest.encryptedSize || received)) * 100)));
+    const reader = response.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.length;
+      onProgress(received, Math.max(expected, received));
+    }
   }
   const encrypted = new Uint8Array(received);
   let offset = 0;

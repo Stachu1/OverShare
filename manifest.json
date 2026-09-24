@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "OverShare",
-  "version": "3.1.0",
-  "description": "Send and receive large files or folders on Discord (channels or DMs): zipped, split into chunks, SHA-256 verified, and reassembled on download.",
+  "version": "3.2.0",
+  "description": "Send large files and folders through your own Discord bot: compressed, AES-256 encrypted, split into chunks and SHA-256 verified.",
   "action": {
     "default_title": "OverShare",
     "default_popup": "popup.html"

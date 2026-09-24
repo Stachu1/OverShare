@@ -65,7 +65,7 @@
     }
     .row { display: flex; gap: 8px; align-items: flex-end; }
     .row > div { flex: 1; min-width: 0; }
-    .row > div.channel-field { flex: 0 0 118px; }
+    .row > div.channel-field { flex: 0 0 140px; }
 
     input[type="text"], input[type="password"], input[type="number"], textarea {
       width: 100%; padding: 9px 12px;
@@ -148,7 +148,18 @@
     .status.ok { color: var(--ok); }
     .status.err { color: var(--err); }
     .status.info { color: var(--muted); }
-    .status-footer { flex: 0 0 auto; padding: 0 14px 12px; }
+    .status-footer { flex: 0 0 auto; padding: 0 14px 12px; position: relative; }
+
+    /* Rocket that flies across the footer after a successful send */
+    .rocket { position: absolute; left: 0; bottom: 8px; font-size: 22px; opacity: 0; pointer-events: none; }
+    .rocket.fly { animation: rocket-fly 1.8s cubic-bezier(0.45, 0, 0.8, 0.6) forwards; }
+    @keyframes rocket-fly {
+      0%   { transform: translate(-30px, 0) rotate(40deg); opacity: 0; }
+      10%  { opacity: 1; }
+      80%  { opacity: 1; }
+      100% { transform: translate(380px, -90px) rotate(20deg); opacity: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) { .rocket.fly { animation: none; } }
 
     #chunkInfo { display: block; margin-top: 2px; }
     .hint { font-size: 11px; color: var(--muted); line-height: 1.5; }
@@ -202,7 +213,6 @@
       <div class="row">
         <div><input type="password" id="botToken" placeholder="Bot token" autocomplete="off" /></div>
         <div class="channel-field"><input type="text" id="channelId" placeholder="Channel ID" /></div>
-        <button class="mini" id="saveBot">Save</button>
       </div>
       <div id="botStatus" class="tokenstatus checking">Checking bot…</div>
     </div>
@@ -248,7 +258,7 @@
     </section>
 
   </main>
-  <div class="status-footer"><div class="status info" id="status"></div></div>
+  <div class="status-footer"><div class="status info" id="status"></div><span class="rocket" id="rocket" aria-hidden="true">🚀</span></div>
 
   <script src="fflate.js"></script>
   <script src="shared.js"></script>

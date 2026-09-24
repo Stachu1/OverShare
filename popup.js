@@ -2,7 +2,7 @@
 
 const CHUNK_BYTES = 20 * 1024 * 1024;
 const SETTINGS_KEYS = ["botToken", "channelId"];
-const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "botToken", "channelId", "saveBot", "botStatus", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute"];
+const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "botToken", "channelId", "botStatus", "rocket", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute"];
 const els = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 let selection = null;
 let payload = null;
@@ -10,6 +10,8 @@ let preparing = false;
 let muted = false;
 let activeUpload = null;
 let config = { token: "", channelId: "" };
+let botCheckRun = 0;
+let botCheckTimer = 0;
 
 els.version.textContent = "v" + chrome.runtime.getManifest().version;
 function setStatus(message, kind = "info") { els.status.textContent = message; els.status.className = `status ${kind}`; }
@@ -76,9 +78,12 @@ function applyUploadState(state) {
   if (state.active) {
     activeUpload = { ...activeUpload, ...state };
     els.progress.style.display = "block";
-    const percent = Math.min(100, Math.round(((state.sent || 0) / (state.total || 1)) * 100));
+    const percent = state.totalBytes
+      ? Math.min(100, Math.round((state.bytesSent / state.totalBytes) * 100))
+      : Math.min(100, Math.round(((state.sent || 0) / (state.total || 1)) * 100));
     els.bar.style.width = percent + "%";
-    setStatus(state.canceling ? `Canceling upload… ${percent}%` : `Sending chunks: ${state.sent || 0}/${state.total || 1} (${percent}%)`, "info");
+    const chunk = `chunk ${Math.min((state.sent || 0) + 1, state.total || 1)}/${state.total || 1}`;
+    setStatus(state.canceling ? `Canceling upload… ${percent}%` : `Sending ${chunk} · ${percent}% · ${transferStats(state)}`, "info");
   } else if (activeUpload) {
     // An idle reply can race a send this popup just started; only a restored upload should be cleared by it.
     if (state.idle && !activeUpload.restored) return;
@@ -86,7 +91,7 @@ function applyUploadState(state) {
     activeUpload = null;
     resetUploadProgress();
     refreshSendState();
-    if (state.outcome === "ok") { playSound("send"); setStatus(`Sent ${state.name || old.name}: ${state.total || old.total} chunk(s) ✓`, "ok"); }
+    if (state.outcome === "ok") { playSound("send"); setStatus(`Sent ${state.name || old.name}: ${state.total || old.total} chunk(s) 🚀`, "ok"); launchRocket(); }
     else if (state.outcome === "canceled") {
       if (state.error?.includes("cleanup failed")) setStatus(state.error, "err");
       else setStatus("Upload canceled and partial Discord messages removed.", "info");
@@ -99,6 +104,13 @@ function applyUploadState(state) {
       setStatus(`Upload of ${old.name} was interrupted. Send it again.`, "err");
     }
   }
+}
+
+function launchRocket() {
+  // Restart the fly-by even if the previous one is still running.
+  els.rocket.classList.remove("fly");
+  void els.rocket.offsetWidth;
+  els.rocket.classList.add("fly");
 }
 
 let audioContext = null;
@@ -132,14 +144,26 @@ document.addEventListener("click", (event) => { const button = event.target.clos
 
 function setBotStatus(message, kind) { els.botStatus.textContent = message; els.botStatus.className = `tokenstatus ${kind}`; }
 async function checkBot() {
+  const run = ++botCheckRun;
   if (!config.token || !config.channelId) { setBotStatus("Enter the bot token and channel ID", "bad"); return false; }
   setBotStatus("Checking bot…", "checking");
   try {
     const bot = await discordRequest(config, "GET", "/users/@me");
     const target = await discordRequest(config, "GET", `/channels/${config.channelId}`);
+    if (run !== botCheckRun) return false;
     setBotStatus(`Connected as ${bot.username} · ${target.name ? "#" + target.name : "DM"}`, "ok");
     return true;
-  } catch (error) { setBotStatus(error.message, "bad"); return false; }
+  } catch (error) { if (run === botCheckRun) setBotStatus(error.message, "bad"); return false; }
+}
+// Saves on every keystroke so a half-entered setting survives closing the popup;
+// the Discord check waits until typing pauses.
+function onBotInput() {
+  config = { token: els.botToken.value.trim(), channelId: els.channelId.value.trim() };
+  chrome.storage.local.set({ botToken: config.token, channelId: config.channelId });
+  clearTimeout(botCheckTimer);
+  botCheckRun++;
+  setBotStatus("Checking bot…", "checking");
+  botCheckTimer = setTimeout(async () => { if (await checkBot() && els.downloadPanel.classList.contains("active")) refreshFiles(); }, 700);
 }
 function requireConfig() { if (!config.token || !config.channelId) throw new Error("set the bot token and channel ID first"); }
 function showTab(download) {
@@ -229,7 +253,18 @@ async function downloadFile(file, button) {
     const keyData = await chrome.storage.local.get(`${file.sha}.symmetricKey`);
     const key = `${file.sha}.${keyData[`${file.sha}.symmetricKey`]}`;
     requireConfig();
-    const { zip } = await downloadTransfer(config, key, (percent) => { els.downloadBar.style.width = percent + "%"; }); const entries = fflate.unzipSync(zip); const names = Object.keys(entries).filter((name) => !name.endsWith("/"));
+    let meter = null, lastUpdate = 0;
+    setStatus(`Downloading ${file.name}…`, "info");
+    const { zip } = await downloadTransfer(config, key, (done, totalBytes) => {
+      meter ??= new TransferMeter(totalBytes);
+      const stats = meter.update(done);
+      const percent = Math.min(100, Math.round((done / totalBytes) * 100));
+      els.downloadBar.style.width = percent + "%";
+      if (performance.now() - lastUpdate < 250 && done < totalBytes) return;
+      lastUpdate = performance.now();
+      setStatus(`Downloading ${file.name} · ${percent}% · ${transferStats(stats)}`, "info");
+    });
+    setStatus(`Decrypting ${file.name}…`, "info"); const entries = fflate.unzipSync(zip); const names = Object.keys(entries).filter((name) => !name.endsWith("/"));
     if (dirHandle) await saveFolder(dirHandle, entries);
     else if (file.kind === "file" && names.length === 1) await saveBytes(entries[names[0]], names[0].split("/").pop());
     else await saveBytes(zip, file.name.replace(/\/$/, "") + ".zip");
@@ -330,11 +365,8 @@ els.send.addEventListener("click", async () => {
 els.tabSend.addEventListener("click", () => showTab(false)); els.tabDownload.addEventListener("click", () => showTab(true));
 const transferChannel = new BroadcastChannel("overshare");
 transferChannel.onmessage = (event) => { if (event.data?.type === "uploadState") applyUploadState(event.data.send); };
-els.saveBot.addEventListener("click", async () => {
-  config = { token: els.botToken.value.trim(), channelId: els.channelId.value.trim() };
-  await chrome.storage.local.set({ botToken: config.token, channelId: config.channelId });
-  if (await checkBot() && els.downloadPanel.classList.contains("active")) refreshFiles();
-});
+els.botToken.addEventListener("input", onBotInput);
+els.channelId.addEventListener("input", onBotInput);
 chrome.storage.local.get(["activeUpload", "muted", ...SETTINGS_KEYS], (data) => {
   muted = !!data.muted; els.mute.textContent = muted ? "🔇" : "🔊";
   config = { token: data.botToken || "", channelId: data.channelId || "" };
