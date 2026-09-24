@@ -8,7 +8,9 @@
   h1 { font-size: 20px; }
   label { display: block; margin: 14px 0 4px; font-size: 13px; color: #b5bac1; }
   input { width: 100%; box-sizing: border-box; padding: 9px; border-radius: 6px; border: 1px solid #3f4147; background: #2b2d31; color: inherit; }
-  button { margin-top: 18px; padding: 9px 16px; border: 0; border-radius: 6px; background: #5865f2; color: #fff; cursor: pointer; }
+  .row { display: flex; gap: 8px; margin-top: 18px; }
+  button { padding: 9px 16px; border: 0; border-radius: 6px; background: #5865f2; color: #fff; cursor: pointer; }
+  button.secondary { background: #4e5058; }
   button:disabled { opacity: .5; cursor: default; }
   pre { background: #111214; padding: 12px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; font-size: 12px; }
   .ok { color: #57f287; } .err { color: #ed4245; }
@@ -26,44 +28,14 @@
   <label for="content">Message</label>
   <input id="content" value="hello">
 
-  <button id="send">Send message</button>
+  <div class="row">
+    <button id="send">Send message</button>
+    <button id="read" class="secondary">Read last 5 messages</button>
+  </div>
 
   <p id="status"></p>
   <pre id="output">No request yet.</pre>
 
-<script>
-  // Placeholders: put your values here to have them pre-filled, or paste them into the page.
-  const BOT_TOKEN = "YOUR_BOT_TOKEN_HERE";
-  const CHANNEL_ID = "YOUR_CHANNEL_ID_HERE";
-
-  const $ = (id) => document.getElementById(id);
-  if (!BOT_TOKEN.startsWith("YOUR_")) $("token").value = BOT_TOKEN;
-  if (!CHANNEL_ID.startsWith("YOUR_")) $("channel").value = CHANNEL_ID;
-
-  $("send").onclick = async () => {
-    const token = $("token").value.trim();
-    const channelId = $("channel").value.trim();
-    $("send").disabled = true;
-    $("status").textContent = "Sending…";
-    $("status").className = "";
-    try {
-      const res = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
-        method: "POST",
-        headers: { "Authorization": `Bot ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ content: $("content").value || "hello" }),
-      });
-      const body = await res.json().catch(() => null);
-      $("status").textContent = `Discord responded ${res.status} ${res.ok ? "— message sent" : "— failed"}`;
-      $("status").className = res.ok ? "ok" : "err";
-      $("output").textContent = JSON.stringify(body, null, 2);
-    } catch (err) {
-      $("status").textContent = "Request blocked or network error (see console)";
-      $("status").className = "err";
-      $("output").textContent = String(err);
-    } finally {
-      $("send").disabled = false;
-    }
-  };
-</script>
+  <script src="index.js"></script>
 </body>
 </html>

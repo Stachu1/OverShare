@@ -1,0 +1,16 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        { "header": "User-Agent", "operation": "set", "value": "DiscordBot (https://github.com/overshare, 1.0)" }
+      ]
+    },
+    "condition": {
+      "urlFilter": "||discord.com/api/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]
