@@ -8,6 +8,7 @@ let payload = null;
 let muted = false;
 let activeUpload = null;
 let activeDownload = null;
+let lastSentToken = ""; // SHA.symmetricKey of the most recent completed send
 let deletingShas = new Set();
 const itemControls = new Map(); // sha -> the rendered list row and its buttons
 let config = { token: "", channelId: "" };
@@ -42,8 +43,7 @@ function setFolderSelection(fileList) {
   const name = (files[0].webkitRelativePath || files[0].name).split("/")[0];
   selection = { kind: "folder", name, files: files.map((file) => ({ file, path: file.webkitRelativePath || file.name })) }; prepareSelection();
 }
-// Selecting only picks the transfer ID and key. The engine compresses and
-// encrypts while it sends, a piece at a time, so nothing is loaded here.
+// Selecting only picks the transfer ID and key; the engine reads the files while sending.
 function prepareSelection() {
   if (!selection) return;
   const hex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -53,8 +53,8 @@ function prepareSelection() {
     originalSize: selection.files.reduce((n, r) => n + r.file.size, 0), entries: selection.files.length,
   };
   els.drop.classList.add("has-file");
-  els.dropLabel.innerHTML = `<div class="name">${escapeHtml(selection.name)}${selection.kind === "folder" ? "/" : ""}</div><div class="size">${humanSize(payload.originalSize)} · ${payload.entries} file(s)<br>Compressed and encrypted while sending</div>`;
-  setStatus("Ready. The file token will be stored after sending.", "ok");
+  els.dropLabel.innerHTML = `<div class="name">${escapeHtml(selection.name)}${selection.kind === "folder" ? "/" : ""}</div><div class="size">${humanSize(payload.originalSize)} · ${payload.entries} file(s)</div>`;
+  setStatus("Ready to send.", "ok");
   replayAnimation(els.drop, "pop");
   requestAnimationFrame(() => replayAnimation(els.send, "ready"));
   refreshSendState();
@@ -101,7 +101,7 @@ function applyUploadState(state) {
     resetUploadProgress();
     refreshSendState();
     if (state.idle) return;
-    if (state.outcome === "ok") { playSound("send"); setStatus(`Sent ${state.name || old.name}: ${state.total || old.total} chunk(s) 🚀`, "ok"); launchFlyer("🚀", "fly"); }
+    if (state.outcome === "ok") { if (old.symmetricKey) lastSentToken = `${old.sha}.${old.symmetricKey}`; playSound("send"); setStatus(`Sent ${state.name || old.name}: ${state.total || old.total} chunk(s) 🚀`, "ok"); launchFlyer("🚀", "fly"); }
     else setStatus(state.text || "Upload failed", state.failed ? "err" : "info");
   }
 }
@@ -300,16 +300,18 @@ els.drop.addEventListener("drop", async (event) => {
   else if (event.dataTransfer.files.length) { const files = [...event.dataTransfer.files]; if (files.length === 1) setFileSelection(files[0]); else { selection = { kind: "multiplefiles", name: "overshare-bundle", files: files.map((file) => ({ file, path: file.name })) }; prepareSelection(); } }
 });
 els.keyCopy.addEventListener("click", async () => {
-  const source = payload || (activeUpload?.symmetricKey ? activeUpload : null);
-  if (!source) { setStatus("Select a file first.", "info"); return; }
-  await navigator.clipboard.writeText(`${source.sha}.${source.symmetricKey}`);
+  // The latest send wins: the one in progress, else the last finished one, else the current selection.
+  const token = activeUpload?.symmetricKey ? `${activeUpload.sha}.${activeUpload.symmetricKey}`
+    : lastSentToken || (payload ? `${payload.sha}.${payload.symmetricKey}` : "");
+  if (!token) { setStatus("Send a file first.", "info"); return; }
+  await navigator.clipboard.writeText(token);
   setStatus("File token copied to clipboard.", "ok");
 });
 els.loadToken.addEventListener("click", async () => {
   const value = els.downloadToken.value.trim();
   const match = value.match(/^([a-f0-9]{64})\.([A-Za-z0-9_-]+)$/i);
   if (!match) { setStatus("Enter a valid SHA.symmetricKey file token.", "err"); return; }
-  await chrome.storage.local.set({ [`${match[1]}.symmetricKey`]: match[2], lastFileToken: value });
+  await chrome.storage.local.set({ [`${match[1]}.symmetricKey`]: match[2] });
   els.downloadToken.value = "";
   setStatus("File token loaded.", "ok");
   refreshFiles();
@@ -386,7 +388,10 @@ transferChannel.onmessage = (event) => {
 };
 els.botToken.addEventListener("input", onBotInput);
 els.channelId.addEventListener("input", onBotInput);
-chrome.storage.local.get(["activeUpload", "muted", ...SETTINGS_KEYS], (data) => {
+// The engine records each finished send as lastFileToken, and clears it when that file is deleted.
+chrome.storage.onChanged.addListener((changes, area) => { if (area === "local" && changes.lastFileToken) lastSentToken = changes.lastFileToken.newValue || ""; });
+chrome.storage.local.get(["activeUpload", "muted", "lastFileToken", ...SETTINGS_KEYS], (data) => {
+  lastSentToken = data.lastFileToken || "";
   muted = !!data.muted; els.mute.textContent = muted ? "🔇" : "🔊";
   config = { token: data.botToken || "", channelId: data.channelId || "" };
   els.botToken.value = config.token; els.channelId.value = config.channelId;
