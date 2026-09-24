@@ -168,6 +168,7 @@ async function uploadFiles(job) {
 		if (uploadError) throw uploadError;
 		throwIfCanceled();
 		const manifest = { v: 3, sha, name, kind: metadata.kind, originalSize, encryptedSize, total: index, iv: base64urlEncode(prefix), firstId };
+		manifest.tag = await manifestTag(manifest, key);
 		await discordRequest(config, "POST", path, { json: { content: MANIFEST_MARKER + JSON.stringify(manifest) }, signal: abortController.signal });
 		await storage("set", { [`${sha}.symmetricKey`]: job.symmetricKey, lastFileToken: `${sha}.${job.symmetricKey}` });
 		await storage("remove", ["activeUpload"]);

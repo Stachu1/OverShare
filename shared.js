@@ -21,6 +21,30 @@ function chunkIv(prefix, index) {
   return iv;
 }
 function chunkAad(sha, index, final) { return new TextEncoder().encode(`OVERSHARE2|${sha}|${index}|${final ? 1 : 0}`); }
+// Transfer IDs are random. Transfers sent before 4.8 have 64-character IDs and
+// no manifest tag.
+const ID_BYTES = 8;
+const LEGACY_ID_LENGTH = 64;
+// The manifest's tag is an AES-GCM tag, made with the file key, over the details a
+// download relies on, so a manifest with a changed name, size or chunk count is
+// refused. It uses IV number 0, which no chunk uses.
+function manifestAad(manifest) {
+  return new TextEncoder().encode(JSON.stringify(["OVERSHARE-MANIFEST", manifest.sha, manifest.name, manifest.kind, manifest.originalSize, manifest.encryptedSize, manifest.total]));
+}
+async function manifestTag(manifest, key) {
+  const tag = await crypto.subtle.encrypt({ name: "AES-GCM", iv: chunkIv(base64urlDecode(manifest.iv), 0), additionalData: manifestAad(manifest) }, key, new Uint8Array(0));
+  return base64urlEncode(new Uint8Array(tag));
+}
+async function verifyManifest(manifest, key) {
+  const failed = new Error("the file's details failed their integrity check (wrong file token, or the manifest was changed)");
+  if (!manifest.tag) { if (manifest.sha.length === LEGACY_ID_LENGTH) return; throw failed; }
+  try {
+    await crypto.subtle.decrypt({ name: "AES-GCM", iv: chunkIv(base64urlDecode(manifest.iv), 0), additionalData: manifestAad(manifest) }, key, base64urlDecode(manifest.tag));
+  } catch (error) {
+    if (error.name === "OperationError") throw failed;
+    throw error;
+  }
+}
 function importChunkKey(encodedKey, usage) { return crypto.subtle.importKey("raw", base64urlDecode(encodedKey), "AES-GCM", false, [usage]); }
 // Popup <-> engine messages. A BroadcastChannel (unlike chrome.runtime
 // messaging) can carry Blobs and directory handles.
@@ -247,6 +271,7 @@ async function* decryptChunks(item, encodedKey, onProgress) {
   const { sha, iv, total: totalText, encryptedSize } = item.manifest;
   const total = Number(totalText);
   const key = await importChunkKey(encodedKey, "decrypt");
+  await verifyManifest(item.manifest, key);
   const prefix = base64urlDecode(iv);
   let received = 0;
   for (let index = 1; index <= total; index++) {

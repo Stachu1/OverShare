@@ -54,7 +54,7 @@ function prepareSelection() {
   const hex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
   payload = {
     kind: selection.kind, name: selection.name, files: selection.files,
-    sha: hex(crypto.getRandomValues(new Uint8Array(32))), symmetricKey: base64urlEncode(crypto.getRandomValues(new Uint8Array(32))),
+    sha: hex(crypto.getRandomValues(new Uint8Array(ID_BYTES))), symmetricKey: base64urlEncode(crypto.getRandomValues(new Uint8Array(32))),
     originalSize: selection.files.reduce((n, r) => n + r.file.size, 0), entries: selection.files.length,
   };
   els.drop.classList.add("has-file");
@@ -369,8 +369,8 @@ els.keyCopy.addEventListener("click", async () => {
 });
 els.loadToken.addEventListener("click", async () => {
   const value = els.downloadToken.value.trim();
-  const match = value.match(/^([a-f0-9]{64})\.([A-Za-z0-9_-]+)$/i);
-  if (!match) { setStatus("Enter a valid SHA.symmetricKey file token.", "err"); return; }
+  const match = value.match(/^([a-f0-9]{16}|[a-f0-9]{64})\.([A-Za-z0-9_-]+)$/i);
+  if (!match) { setStatus("Enter a valid file token (ID.key).", "err"); return; }
   await chrome.storage.local.set({ [`${match[1]}.symmetricKey`]: match[2] });
   els.downloadToken.value = "";
   setStatus("File token loaded.", "ok");

@@ -6,13 +6,13 @@ A Chrome/Edge extension for sending large files and folders through Discord usin
 
 **Sending**
 
-1. Selecting a file or folder picks a random transfer ID and a new random **AES-256** key. The **file token** is `<id>.<key>`.
+1. Selecting a file or folder picks a random 16-character transfer ID and a new random **AES-256** key. The **file token** is `<id>.<key>`.
 2. The background engine reads the files 4 MB at a time and compresses them into one zip as it goes ([fflate](https://github.com/101arrowz/fflate)). Every file keeps its path inside the folder.
 3. The zip is cut into 20 MB pieces. Each one is encrypted with **AES-256-GCM** and uploaded in its own message as an attachment named `<id>.<n>`. The next piece is compressed and encrypted while the current one uploads, so only about two pieces are in memory at a time, whatever the file size.
 4. When the last piece is up, a manifest message (`OVERSHARE|{name, size, chunk count, …}`) is posted. Uploads keep going if you close the popup.
 5. The file token is saved in the extension. It's the only way to find and decrypt the file, and the key never goes to Discord.
 
-Each piece's encryption covers the transfer ID, the piece's number and whether it's the last one. A changed, reordered, missing or cut-off piece fails to decrypt instead of producing a damaged file.
+Each piece's encryption covers the transfer ID, the piece's number and whether it's the last one. A changed, reordered, missing or cut-off piece fails to decrypt instead of producing a damaged file. The manifest carries a tag made with the file's key over the file's name, size and chunk count, so a download refuses a manifest that was changed.
 
 **Downloading**
 
