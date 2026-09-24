@@ -100,7 +100,7 @@ async function uploadFiles(job) {
 		const queue = new ByteQueue();
 		let zipError = null, zipDone = false;
 		const zip = new fflate.Zip((error, data, final) => { if (error) zipError = error; else { queue.push(data); if (final) zipDone = true; } });
-		let inputRead = 0, lastCutInput = 0, index = 0, encryptedSize = 0;
+		let inputRead = 0, lastCutInput = 0, index = 0, encryptedSize = 0, firstId = null;
 
 		// Progress is counted in original bytes, spread over each piece as it uploads.
 		async function sendPiece(plain, final) {
@@ -112,13 +112,15 @@ async function uploadFiles(job) {
 			const form = new FormData();
 			form.append("payload_json", JSON.stringify({}));
 			form.append("files[0]", new Blob([ciphertext]), `${sha}.${index}`);
-			await discordUpload(config, path, form, {
+			const message = await discordUpload(config, path, form, {
 				signal: abortController.signal,
 				onProgress: (loaded) => {
 					active.bytesSent = from + (to - from) * Math.min(1, loaded / ciphertext.length);
 					if (performance.now() - lastPublish >= PUBLISH_INTERVAL_MS) publishActive();
 				},
 			});
+			if (index === 1) firstId = message?.id;
+			if (!firstId) throw new Error("Discord did not return the chunk message");
 			active.sent = index;
 			active.bytesSent = to;
 			publishActive();
@@ -150,7 +152,7 @@ async function uploadFiles(job) {
 		throwIfCanceled();
 		await sendPiece(queue.take(queue.length), true);
 		throwIfCanceled();
-		const manifest = { v: 2, sha, name, kind: metadata.kind, originalSize, encryptedSize, total: index, iv: base64urlEncode(prefix) };
+		const manifest = { v: 3, sha, name, kind: metadata.kind, originalSize, encryptedSize, total: index, iv: base64urlEncode(prefix), firstId };
 		await discordRequest(config, "POST", path, { json: { content: MANIFEST_MARKER + JSON.stringify(manifest) }, signal: abortController.signal });
 		await storage("set", { [`${sha}.symmetricKey`]: job.symmetricKey, lastFileToken: `${sha}.${job.symmetricKey}` });
 		await storage("remove", ["activeUpload"]);
@@ -255,8 +257,7 @@ async function runDownload(job) {
 	publishActiveDownload();
 	try {
 		const encodedKey = job.key.split(".", 2)[1];
-		const { found } = await findTransfers(job.config, [job.key]);
-		const item = found[job.sha];
+		const item = await findTransfer(job.config, job.key);
 		if (!item) throw new Error("file manifest not found");
 		const onProgress = (done, totalBytes) => {
 			activeDownload.meter ??= new TransferMeter(totalBytes);

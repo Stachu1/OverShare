@@ -10,6 +10,8 @@ let activeUpload = null;
 let activeDownload = null;
 let lastSentToken = ""; // SHA.symmetricKey of the most recent completed send
 let deletingShas = new Set();
+const LIST_PAGE = 4; // files added to the Download list per load
+let scanner = null, listRun = 0, listLoading = false, listFooter = null, shownFiles = 0, incompleteFiles = 0;
 const itemControls = new Map(); // sha -> the rendered list row and its buttons
 let config = { token: "", channelId: "" };
 let botCheckRun = 0;
@@ -191,31 +193,26 @@ function updateItemButtons() {
   }
   els.deleteStorage.disabled = deletingShas.size > 0;
 }
-function renderFiles(files) {
-  els.fileList.textContent = "";
-  itemControls.clear();
-  if (!files.length) { els.fileList.innerHTML = '<div class="empty">No complete files found.</div>'; return; }
-  for (const file of files) {
-    const item = document.createElement("div"); item.className = "item"; item.style.setProperty("--i", els.fileList.children.length);
-    const meta = document.createElement("div"); meta.className = "meta";
-    const name = document.createElement("div"); name.className = "fname"; name.textContent = file.name + (showsSlash(file.kind) ? "/" : "");
-    const sub = document.createElement("div"); sub.className = file.available ? "sub" : "sub incomplete";
-    sub.textContent = file.available ? `${humanSize(file.originalSize)} · ${file.total} chunk(s) · ${file.kind}`
-      : file.manifestFound ? `${humanSize(file.originalSize)} · missing ${file.missingChunks} chunk(s)`
-      : file.orphanChunks ? `upload never finished · ${file.orphanChunks} chunk(s) left behind` : "missing from channel";
-    meta.append(name, sub);
-    const actions = document.createElement("div"); actions.className = "item-actions";
-    const button = document.createElement("button"); button.textContent = "Download"; button.addEventListener("click", () => downloadFile(file));
-    const copyButton = document.createElement("button"); copyButton.className = "copy-token"; copyButton.textContent = "Copy"; copyButton.title = "Copy file token";
-    copyButton.addEventListener("click", () => copyFileToken(file, copyButton));
-    const deleteButton = document.createElement("button"); deleteButton.className = "delete-file"; deleteButton.textContent = "Delete"; deleteButton.title = "Delete this file from Discord and local storage";
-    deleteButton.addEventListener("click", () => deleteFileToken(file));
-    const secondaryActions = document.createElement("div"); secondaryActions.className = "secondary-actions";
-    secondaryActions.append(copyButton, deleteButton);
-    actions.append(button, secondaryActions); item.append(meta, actions); els.fileList.appendChild(item);
-    itemControls.set(file.sha, { file, item, downloadButton: button, deleteButton });
-  }
-  updateItemButtons();
+function fileRow(file, position) {
+  const item = document.createElement("div"); item.className = "item"; item.style.setProperty("--i", position);
+  const meta = document.createElement("div"); meta.className = "meta";
+  const name = document.createElement("div"); name.className = "fname"; name.textContent = file.name + (showsSlash(file.kind) ? "/" : "");
+  const sub = document.createElement("div"); sub.className = file.available ? "sub" : "sub incomplete";
+  sub.textContent = file.available ? `${humanSize(file.originalSize)} · ${file.total} chunk(s) · ${file.kind}`
+    : file.manifestFound ? `${humanSize(file.originalSize)} · missing ${file.missingChunks} chunk(s)`
+    : file.orphanChunks ? `upload never finished · ${file.orphanChunks} chunk(s) left behind` : "missing from channel";
+  meta.append(name, sub);
+  const actions = document.createElement("div"); actions.className = "item-actions";
+  const button = document.createElement("button"); button.textContent = "Download"; button.addEventListener("click", () => downloadFile(file));
+  const copyButton = document.createElement("button"); copyButton.className = "copy-token"; copyButton.textContent = "Copy"; copyButton.title = "Copy file token";
+  copyButton.addEventListener("click", () => copyFileToken(file, copyButton));
+  const deleteButton = document.createElement("button"); deleteButton.className = "delete-file"; deleteButton.textContent = "Delete"; deleteButton.title = "Delete this file from Discord and local storage";
+  deleteButton.addEventListener("click", () => deleteFileToken(file));
+  const secondaryActions = document.createElement("div"); secondaryActions.className = "secondary-actions";
+  secondaryActions.append(copyButton, deleteButton);
+  actions.append(button, secondaryActions); item.append(meta, actions);
+  itemControls.set(file.sha, { file, item, downloadButton: button, deleteButton });
+  return item;
 }
 async function copyFileToken(file, button) {
   try {
@@ -253,12 +250,52 @@ function applyDeleteState(state) {
   } else if (state.current) setStatus(`Deleting ${state.current.label}… ${state.current.deleted} message(s) removed`, "info");
   updateItemButtons();
 }
+// The list starts with the newest few files and reads further back in the
+// channel only when it is scrolled to the bottom.
 async function refreshFiles() {
+  const run = ++listRun;
+  scanner = null; listLoading = false; shownFiles = 0; incompleteFiles = 0;
+  itemControls.clear();
   if (!config.token || !config.channelId) { els.fileList.innerHTML = '<div class="empty">Set the bot token and channel ID first.</div>'; return; }
-  els.fileList.innerHTML = '<div class="empty">Searching Discord…</div>';
+  els.fileList.textContent = "";
+  listFooter = document.createElement("div"); listFooter.className = "empty";
+  els.fileList.appendChild(listFooter);
+  const keys = await storedKeys();
+  if (run !== listRun) return;
+  scanner = new TransferScanner(config, keys);
+  loadMoreFiles();
+}
+async function loadMoreFiles() {
+  if (!scanner || scanner.done || listLoading) return;
+  const run = listRun;
+  listLoading = true;
+  listFooter.textContent = "Searching Discord…";
   try {
-    const { files } = await findTransfers(config, await storedKeys()); renderFiles(files); const complete = files.filter((file) => file.available).length; const incomplete = files.length - complete; setStatus(`${complete} complete, ${incomplete} incomplete file(s).`, incomplete ? "info" : "ok");
-  } catch (error) { els.fileList.innerHTML = '<div class="empty">Could not search for files.</div>'; setStatus("Search failed: " + error.message, "err"); }
+    const files = await scanner.next(LIST_PAGE);
+    if (run !== listRun) return;
+    files.forEach((file, position) => els.fileList.insertBefore(fileRow(file, position), listFooter));
+    shownFiles += files.length;
+    incompleteFiles += files.filter((file) => !file.available).length;
+    updateItemButtons();
+  } catch (error) {
+    if (run !== listRun) return;
+    scanner = null;
+    listFooter.textContent = "Could not search for files.";
+    setStatus("Search failed: " + error.message, "err");
+    return;
+  } finally { if (run === listRun) listLoading = false; }
+  if (scanner.done) {
+    if (shownFiles) listFooter.remove(); else listFooter.textContent = "No files found.";
+    setStatus(`${shownFiles - incompleteFiles} complete, ${incompleteFiles} incomplete file(s).`, incompleteFiles ? "info" : "ok");
+  } else {
+    listFooter.textContent = "Scroll for more";
+    setStatus(`Showing the latest ${shownFiles} file(s).`, "ok");
+  }
+  loadIfAtBottom(); // keeps going while the list is too short to scroll
+}
+function loadIfAtBottom() {
+  const list = els.fileList;
+  if (list.scrollHeight - list.scrollTop - list.clientHeight < 40) loadMoreFiles();
 }
 // Downloads run in the engine, so they finish even if the popup closes. A folder
 // is picked here first, because the folder picker needs a click in this page.
@@ -388,6 +425,7 @@ els.send.addEventListener("click", async () => {
     refreshSendState();
   } catch (error) { setStatus("Send failed: " + error.message, "err"); refreshSendState(); }
 });
+els.fileList.addEventListener("scroll", loadIfAtBottom);
 els.tabSend.addEventListener("click", () => showTab(false)); els.tabDownload.addEventListener("click", () => showTab(true));
 const transferChannel = new BroadcastChannel("overshare");
 transferChannel.onmessage = (event) => {

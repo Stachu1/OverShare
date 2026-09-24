@@ -115,13 +115,19 @@ async function discordUpload(config, path, form, { signal, onProgress } = {}) {
   }
 }
 
+const MESSAGE_PAGE = 100;
+const MAX_PAGES = 100; // the history read is capped at the latest 10,000 messages
+
+function messagePage(config, before) {
+  return discordRequest(config, "GET", `/channels/${config.channelId}/messages?limit=${MESSAGE_PAGE}${before ? `&before=${before}` : ""}`);
+}
 async function channelMessages(config) {
   const messages = [];
   let before = null;
-  for (let page = 0; page < 100; page++) {
-    const batch = await discordRequest(config, "GET", `/channels/${config.channelId}/messages?limit=100${before ? `&before=${before}` : ""}`);
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const batch = await messagePage(config, before);
     messages.push(...batch);
-    if (batch.length < 100) break;
+    if (batch.length < MESSAGE_PAGE) break;
     before = batch[batch.length - 1]?.id;
     if (!before) break;
   }
@@ -132,37 +138,89 @@ function shasFromKeys(keys) {
   return new Set(keys.filter((key) => key.includes(".")).map((key) => key.split(".", 1)[0]));
 }
 
-// Finds the manifest and chunk attachments of every transfer whose file token is
-// stored. Returns { files } for the list and { found } with chunk URLs. Transfers
-// from versions before 3.7 use another format and show as missing (they can
-// still be deleted).
-async function findTransfers(config, keys) {
-  const wanted = shasFromKeys(keys);
-  const found = {}, partsBySha = {};
-  for (const message of await channelMessages(config)) {
-    const content = message.content || "";
-    if (content.startsWith(MANIFEST_MARKER)) {
-      let manifest = null;
-      try { manifest = JSON.parse(content.split("\n", 1)[0].slice(MANIFEST_MARKER.length)); } catch (_) {}
-      if (manifest?.v === 2 && wanted.has(manifest.sha) && !found[manifest.sha]) found[manifest.sha] = { manifest, parts: {} };
-    }
-    for (const attachment of message.attachments || []) {
-      const match = (attachment.filename || "").match(/^([^.]+)\.(\d+)$/);
-      if (match && wanted.has(match[1])) (partsBySha[match[1]] ??= {})[Number(match[2])] = { url: attachment.url, size: attachment.size || 0 };
-    }
+// Walks the channel newest-first, a page of messages at a time, and hands out the
+// transfers whose file tokens are stored, newest first. Chunks are always older
+// than their manifest, and the manifest names the message of chunk 1, so a
+// transfer is handed out as soon as all its chunks are found or the walk has gone
+// past chunk 1. Only as much history is read as the files asked for need.
+// Transfers without a manifest (unfinished or deleted) can only be known once the
+// whole history is read, so they come last.
+class TransferScanner {
+  constructor(config, keys) {
+    this.config = config;
+    this.wanted = shasFromKeys(keys);
+    this.queue = []; // { manifest, sentAt } with a manifest found, newest first, not handed out yet
+    this.parts = {}; // sha -> { chunk number: { url, size } }
+    this.seen = new Set(); // shas whose manifest was found
+    this.before = null;
+    this.pages = 0;
+    this.ended = !this.wanted.size; // no more history to read, or none needed
+    this.leftoversGiven = false;
   }
-  const files = [...wanted].sort().map((sha) => {
-    const item = found[sha];
-    // The manifest is posted last, so chunks without one are a send that never finished.
-    const orphanChunks = Object.keys(partsBySha[sha] || {}).length;
-    if (!item) return { sha, name: orphanChunks ? "Unfinished upload" : "Unknown transfer", available: false, manifestFound: false, missingFile: !orphanChunks, missingChunks: null, orphanChunks };
-    item.parts = partsBySha[sha] || {};
-    const total = Number(item.manifest.total);
+  get done() { return this.ended && !this.queue.length && this.leftoversGiven; }
+  async readPage() {
+    const batch = await messagePage(this.config, this.before);
+    for (const message of batch) {
+      const content = message.content || "";
+      if (content.startsWith(MANIFEST_MARKER)) {
+        let manifest = null;
+        try { manifest = JSON.parse(content.split("\n", 1)[0].slice(MANIFEST_MARKER.length)); } catch (_) {}
+        if (manifest?.v === 3 && this.wanted.has(manifest.sha) && !this.seen.has(manifest.sha)) {
+          this.seen.add(manifest.sha);
+          this.queue.push({ manifest, sentAt: Date.parse(message.timestamp) || 0 });
+        }
+      }
+      for (const attachment of message.attachments || []) {
+        const match = (attachment.filename || "").match(/^([^.]+)\.(\d+)$/);
+        if (match && this.wanted.has(match[1])) (this.parts[match[1]] ??= {})[Number(match[2])] = { url: attachment.url, size: attachment.size || 0 };
+      }
+    }
+    this.pages++;
+    if (batch.length) this.before = batch[batch.length - 1].id;
+    if (batch.length < MESSAGE_PAGE || this.pages >= MAX_PAGES) this.ended = true;
+  }
+  chunksFound(manifest) {
+    const parts = this.parts[manifest.sha] || {};
     let have = 0;
-    for (let index = 1; index <= total; index++) if (item.parts[index]) have++;
-    return { ...item.manifest, available: have === total, manifestFound: true, missingFile: false, missingChunks: total - have };
-  });
-  return { files, found };
+    for (let index = 1; index <= Number(manifest.total); index++) if (parts[index]) have++;
+    return have;
+  }
+  ready({ manifest }) {
+    if (this.ended || this.chunksFound(manifest) === Number(manifest.total)) return true;
+    return !!this.before && BigInt(this.before) <= BigInt(manifest.firstId);
+  }
+  describe({ manifest, sentAt }) {
+    const total = Number(manifest.total), have = this.chunksFound(manifest);
+    return { ...manifest, sentAt, parts: this.parts[manifest.sha] || {}, available: have === total, manifestFound: true, missingFile: false, missingChunks: total - have };
+  }
+  // Returns up to count more files for the list, newest first.
+  async next(count) {
+    const files = [];
+    for (;;) {
+      while (files.length < count && this.queue.length && this.ready(this.queue[0])) files.push(this.describe(this.queue.shift()));
+      if (files.length >= count || this.ended) break;
+      // Once every wanted manifest is found and handed out, older history can't add a file.
+      if (!this.queue.length && this.seen.size === this.wanted.size) { this.ended = true; break; }
+      await this.readPage();
+    }
+    if (this.ended && !this.queue.length && !this.leftoversGiven && files.length < count) {
+      this.leftoversGiven = true;
+      for (const sha of this.wanted) {
+        if (this.seen.has(sha)) continue;
+        // The manifest is posted last, so chunks without one are a send that never finished.
+        const orphanChunks = Object.keys(this.parts[sha] || {}).length;
+        files.push({ sha, name: orphanChunks ? "Unfinished upload" : "Unknown transfer", available: false, manifestFound: false, missingFile: !orphanChunks, missingChunks: null, orphanChunks });
+      }
+    }
+    return files;
+  }
+}
+
+// Finds one transfer's manifest and chunks, reading no further back than it needs.
+async function findTransfer(config, key) {
+  const scanner = new TransferScanner(config, [key]);
+  const [file] = await scanner.next(1);
+  return file?.manifestFound ? { manifest: file, parts: file.parts } : null;
 }
 
 // Deletes every message that mentions one of the SHAs or carries one of their

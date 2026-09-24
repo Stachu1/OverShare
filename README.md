@@ -16,7 +16,7 @@ Each piece's encryption covers the transfer ID, the piece's number and whether i
 
 **Downloading**
 
-1. For each file token you have, the extension searches the channel history for the matching manifest and chunks, and shows whether the file is complete.
+1. For each file token you have, the extension searches the channel history for the matching manifest and chunks, and shows whether the file is complete. The Download list shows the newest files first, 4 at a time, and reads further back in the channel as you scroll down.
 2. It downloads the pieces one at a time, decrypts each, and unzips as it goes, writing files out as they appear. Folders are written back as folders.
 
 **Why no server is needed:** Discord rejects bot-token requests that carry a browser `User-Agent`. The extension has a `declarativeNetRequest` rule (`rules.json`) that sets `User-Agent: DiscordBot (…)` on its requests to `discord.com/api/`, so the browser can call the bot API directly. An extension can change this header; an ordinary web page can't.
@@ -51,7 +51,7 @@ In Discord, go to **User Settings → Advanced** and turn on **Developer Mode**.
 
 ## Use
 
-- **Send:** drop a file or folder on the popup, or click to pick one, then click **Send encrypted file**. When it finishes, copy the file token with **Copy Token** or from the Download list.
+- **Send:** drop a file or folder on the popup, or click to pick one, then click **Send**. When it finishes, copy the file token with **Copy Token** or from the Download list.
 - **Download:** open the Download tab. Files whose tokens you have are listed automatically. Paste a token someone sent you and click **Load** to add it.
 - **Export / Import Tokens** backs up your file tokens as a JSON file. The bot token and channel ID aren't included.
 - **Delete** removes a file's messages from Discord and its token from the extension.
@@ -80,7 +80,7 @@ This is why OverShare should have **its own bot and its own server**:
 
 - Chunks are 20 MB. If sending fails with a `413` error, your server's upload limit is lower than that.
 - Memory use stays about the same whatever the file size (a few hundred MB at most), because files are read, compressed, encrypted and uploaded a piece at a time.
-- Transfers sent with versions before 3.7 use an older format and can't be downloaded any more; they show as missing, and you can still delete them.
+- Transfers sent with versions before 4.0 use an older format and can't be downloaded any more; they show as missing, and you can still delete them.
 - Sends, downloads and deletes run in the background and keep going after you close the popup. Closing the browser stops them.
 - Cancelling or a failed send removes the chunks already sent. So does a send cut off by closing the browser: its leftovers are removed the next time the browser starts. If that cleanup can't reach Discord, the partial file stays in the Download list so you can delete it there.
 - For a folder download, the popup asks where to save before the download starts. If the browser doesn't keep write access to that folder once the popup closes, the folder is saved as a zip instead.
