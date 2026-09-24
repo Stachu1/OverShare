@@ -8,9 +8,7 @@
   h1 { font-size: 20px; }
   label { display: block; margin: 14px 0 4px; font-size: 13px; color: #b5bac1; }
   input { width: 100%; box-sizing: border-box; padding: 9px; border-radius: 6px; border: 1px solid #3f4147; background: #2b2d31; color: inherit; }
-  .row { display: flex; gap: 8px; margin-top: 18px; }
-  button { padding: 9px 16px; border: 0; border-radius: 6px; background: #5865f2; color: #fff; cursor: pointer; }
-  button.secondary { background: #4e5058; }
+  button { margin-top: 18px; padding: 9px 16px; border: 0; border-radius: 6px; background: #5865f2; color: #fff; cursor: pointer; }
   button:disabled { opacity: .5; cursor: default; }
   pre { background: #111214; padding: 12px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; font-size: 12px; }
   .ok { color: #57f287; } .err { color: #ed4245; }
@@ -20,56 +18,52 @@
   <h1>Discord Bot API Test</h1>
 
   <label for="token">Bot token</label>
-  <input id="token" type="password" autocomplete="off">
+  <input id="token" type="password" autocomplete="off" placeholder="Paste bot token here">
 
   <label for="channel">Channel ID</label>
-  <input id="channel" placeholder="Right-click a channel → Copy Channel ID">
+  <input id="channel" placeholder="Paste channel ID here">
 
   <label for="content">Message</label>
   <input id="content" value="hello">
 
-  <div class="row">
-    <button id="send">Send message</button>
-    <button id="check" class="secondary">Check token</button>
-  </div>
+  <button id="send">Send message</button>
 
   <p id="status"></p>
   <pre id="output">No request yet.</pre>
 
 <script>
-  const $ = (id) => document.getElementById(id);
-  for (const id of ["token", "channel"]) {
-    $(id).value = localStorage.getItem("bottest_" + id) || "";
-    $(id).addEventListener("input", () => localStorage.setItem("bottest_" + id, $(id).value));
-  }
+  // Placeholders: put your values here to have them pre-filled, or paste them into the page.
+  const BOT_TOKEN = "YOUR_BOT_TOKEN_HERE";
+  const CHANNEL_ID = "YOUR_CHANNEL_ID_HERE";
 
-  async function call(path, payload) {
-    const buttons = document.querySelectorAll("button");
-    buttons.forEach((b) => (b.disabled = true));
+  const $ = (id) => document.getElementById(id);
+  if (!BOT_TOKEN.startsWith("YOUR_")) $("token").value = BOT_TOKEN;
+  if (!CHANNEL_ID.startsWith("YOUR_")) $("channel").value = CHANNEL_ID;
+
+  $("send").onclick = async () => {
+    const token = $("token").value.trim();
+    const channelId = $("channel").value.trim();
+    $("send").disabled = true;
     $("status").textContent = "Sending…";
     $("status").className = "";
     try {
-      const res = await fetch(path, {
+      const res = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        headers: { "Authorization": `Bot ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ content: $("content").value || "hello" }),
       });
-      const data = await res.json();
-      $("status").textContent = `Discord responded ${data.status} ${data.ok ? "— success" : "— failed"}`;
-      $("status").className = data.ok ? "ok" : "err";
-      $("output").textContent = JSON.stringify(data.body, null, 2);
+      const body = await res.json().catch(() => null);
+      $("status").textContent = `Discord responded ${res.status} ${res.ok ? "— message sent" : "— failed"}`;
+      $("status").className = res.ok ? "ok" : "err";
+      $("output").textContent = JSON.stringify(body, null, 2);
     } catch (err) {
-      $("status").textContent = "Could not reach the local server";
+      $("status").textContent = "Request blocked or network error (see console)";
       $("status").className = "err";
       $("output").textContent = String(err);
     } finally {
-      buttons.forEach((b) => (b.disabled = false));
+      $("send").disabled = false;
     }
-  }
-
-  $("send").onclick = () =>
-    call("/api/send", { token: $("token").value, channel_id: $("channel").value, content: $("content").value });
-  $("check").onclick = () => call("/api/check", { token: $("token").value });
+  };
 </script>
 </body>
 </html>
