@@ -93,7 +93,8 @@ function applyUploadState(state) {
       ? Math.min(100, Math.round((state.bytesSent / state.totalBytes) * 100))
       : Math.min(100, Math.round(((state.sent || 0) / (state.total || 1)) * 100));
     els.bar.style.width = percent + "%";
-    const chunk = state.total ? `chunk ${Math.min((state.sent || 0) + 1, state.total)}/${state.total}` : `chunk ${(state.sent || 0) + 1}`;
+    const { from, to } = state.sending || { from: 1, to: 1 };
+    const chunk = from === to ? `chunk ${from}` : `chunks ${from}–${to}`;
     if (state.cleaning) setStatus(`Removing sent chunks of ${state.name}…`, "info");
     else if (state.canceling) setStatus(`Canceling upload… ${percent}%`, "info");
     else setStatus(`Sending ${chunk} · ${percent}% · ${transferStats(state)}`, "info");

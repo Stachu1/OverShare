@@ -5,7 +5,7 @@
 // error, and after a browser restart that interrupted one.
 
 // Files are read and compressed this much at a time, so memory stays near one
-// chunk no matter how big the transfer is.
+// message of chunks no matter how big the transfer is.
 const READ_SLICE_BYTES = 4 * 1024 * 1024;
 // Compressed data is fed to the unzip in slices this small, which bounds how much
 // a highly compressible file can expand before it is written out.
@@ -14,6 +14,8 @@ const UNZIP_SLICE_BYTES = 64 * 1024;
 // finished, so cleanup searches the channel a second time after this delay.
 const CLEANUP_RECHECK_MS = 3000;
 const PUBLISH_INTERVAL_MS = 250;
+// Encrypted chunks are held back and posted this many to a message, Discord's attachment limit.
+const CHUNKS_PER_MESSAGE = 10;
 const channel = new BroadcastChannel(ENGINE_CHANNEL);
 
 let active = null;          // the upload, or the cleanup of one
@@ -46,7 +48,7 @@ function publish(send) { channel.postMessage({ type: "uploadState", send }); }
 function publishActive(extra = {}) {
 	lastPublish = performance.now();
 	const { speed, eta } = active.meter.update(active.bytesSent);
-	publish({ active: true, name: active.name, sent: active.sent, total: active.total, bytesSent: active.bytesSent, totalBytes: active.totalBytes, speed, eta, state: "sending", canceling: cancelRequested || active.cleaning, cleaning: active.cleaning, ...extra });
+	publish({ active: true, name: active.name, sent: active.sent, sending: active.sending, total: active.total, bytesSent: active.bytesSent, totalBytes: active.totalBytes, speed, eta, state: "sending", canceling: cancelRequested || active.cleaning, cleaning: active.cleaning, ...extra });
 }
 function throwIfCanceled() { if (cancelRequested) throw new DOMException("Upload canceled", "AbortError"); }
 
@@ -101,25 +103,38 @@ async function uploadFiles(job) {
 		let zipError = null, zipDone = false;
 		const zip = new fflate.Zip((error, data, final) => { if (error) zipError = error; else { queue.push(data); if (final) zipDone = true; } });
 		let inputRead = 0, lastCutInput = 0, index = 0, encryptedSize = 0, firstId = null;
+		let batch = []; // encrypted chunks waiting to go up in one message
 
-		// Progress is counted in original bytes, spread over each piece as it uploads.
 		async function sendPiece(plain, final) {
 			index++;
-			const from = lastCutInput, to = final ? originalSize : inputRead;
-			lastCutInput = to;
 			const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: chunkIv(prefix, index), additionalData: chunkAad(sha, index, final) }, key, plain));
 			encryptedSize += ciphertext.length;
+			batch.push({ index, ciphertext });
+			if (batch.length === CHUNKS_PER_MESSAGE || final) await sendBatch(final);
+		}
+		// Progress is counted in original bytes, spread over each message as it uploads.
+		async function sendBatch(final) {
+			const pieces = batch;
+			batch = [];
+			const from = lastCutInput, to = final ? originalSize : inputRead;
+			lastCutInput = to;
 			const form = new FormData();
 			form.append("payload_json", JSON.stringify({}));
-			form.append("files[0]", new Blob([ciphertext]), `${sha}.${index}`);
+			let bytes = 0;
+			pieces.forEach(({ index: number, ciphertext }, slot) => {
+				form.append(`files[${slot}]`, new Blob([ciphertext]), `${sha}.${number}`);
+				bytes += ciphertext.length;
+			});
+			active.sending = { from: pieces[0].index, to: pieces[pieces.length - 1].index };
+			publishActive();
 			const message = await discordUpload(config, path, form, {
 				signal: abortController.signal,
 				onProgress: (loaded) => {
-					active.bytesSent = from + (to - from) * Math.min(1, loaded / ciphertext.length);
+					active.bytesSent = from + (to - from) * Math.min(1, loaded / bytes);
 					if (performance.now() - lastPublish >= PUBLISH_INTERVAL_MS) publishActive();
 				},
 			});
-			if (index === 1) firstId = message?.id;
+			if (!firstId) firstId = message?.id;
 			if (!firstId) throw new Error("Discord did not return the chunk message");
 			active.sent = index;
 			active.bytesSent = to;
