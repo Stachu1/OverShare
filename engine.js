@@ -83,6 +83,21 @@ class ByteQueue {
 		return out;
 	}
 }
+// Encrypted chunks wait for their message on disk, in the origin private file
+// system, so a message's worth of chunks never has to sit in memory. The
+// upload reads them straight from those files.
+const SPOOL_DIR = "upload-spool";
+async function spoolDir() { return (await navigator.storage.getDirectory()).getDirectoryHandle(SPOOL_DIR, { create: true }); }
+async function clearSpool() {
+	try { await (await navigator.storage.getDirectory()).removeEntry(SPOOL_DIR, { recursive: true }); } catch (_) {}
+}
+async function spoolChunk(dir, name, data) {
+	const handle = await dir.getFileHandle(name, { create: true });
+	const writable = await handle.createWritable();
+	await writable.write(data);
+	await writable.close();
+	return handle.getFile();
+}
 // Zip timestamps can't go before 1980.
 function zipTime(file) { return new Date(Math.max(file.lastModified || 0, Date.UTC(1980, 0, 2))); }
 
@@ -98,19 +113,21 @@ async function uploadFiles(job) {
 		// Stored first, so a browser restart mid-send can still find and remove the chunks.
 		await storage("set", { activeUpload: record });
 		publishActive();
+		await clearSpool();
+		const spool = await spoolDir();
 		const key = await importChunkKey(job.symmetricKey, "encrypt");
 		const prefix = crypto.getRandomValues(new Uint8Array(8));
 		const queue = new ByteQueue();
 		let zipError = null, zipDone = false;
 		const zip = new fflate.Zip((error, data, final) => { if (error) zipError = error; else { queue.push(data); if (final) zipDone = true; } });
 		let inputRead = 0, lastCutInput = 0, index = 0, encryptedSize = 0, firstId = null;
-		let batch = []; // encrypted chunks waiting to go up in one message
+		let batch = []; // spooled encrypted chunks waiting to go up in one message
 
 		async function sendPiece(plain, final) {
 			index++;
-			const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: chunkIv(prefix, index), additionalData: chunkAad(sha, index, final) }, key, plain));
-			encryptedSize += ciphertext.length;
-			batch.push({ index, ciphertext });
+			const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: chunkIv(prefix, index), additionalData: chunkAad(sha, index, final) }, key, plain);
+			encryptedSize += ciphertext.byteLength;
+			batch.push({ index, file: await spoolChunk(spool, String(index), ciphertext) });
 			if (batch.length === CHUNKS_PER_MESSAGE || final) await sendBatch(final);
 		}
 		// Progress is counted in original bytes, spread over each message as it uploads.
@@ -122,9 +139,9 @@ async function uploadFiles(job) {
 			const form = new FormData();
 			form.append("payload_json", JSON.stringify({}));
 			let bytes = 0;
-			pieces.forEach(({ index: number, ciphertext }, slot) => {
-				form.append(`files[${slot}]`, new Blob([ciphertext]), `${sha}.${number}`);
-				bytes += ciphertext.length;
+			pieces.forEach(({ index: number, file }, slot) => {
+				form.append(`files[${slot}]`, file, `${sha}.${number}`);
+				bytes += file.size;
 			});
 			active.sending = { from: pieces[0].index, to: pieces[pieces.length - 1].index };
 			publishActive();
@@ -137,6 +154,7 @@ async function uploadFiles(job) {
 			});
 			if (!firstId) firstId = message?.id;
 			if (!firstId) throw new Error("Discord did not return the chunk message");
+			for (const { index: number } of pieces) await spool.removeEntry(String(number)).catch(() => {});
 			active.sent = index;
 			active.bytesSent = to;
 			publishActive();
@@ -186,6 +204,7 @@ async function uploadFiles(job) {
 			text: cleanupError ? `${lead}, but ${cleanupFailureText(cleanupError)}` : `${lead}. Sent chunks were removed from Discord.`,
 		});
 	} finally {
+		await clearSpool();
 		active = null;
 		abortController = null;
 	}
@@ -203,6 +222,7 @@ async function cleanUpInterruptedUpload(record) {
 
 // On startup, a stored activeUpload means the browser closed mid-send.
 const ready = (async () => {
+	await clearSpool(); // chunks spooled by a send the browser cut off
 	const { activeUpload: record } = await storage("get", ["activeUpload"]);
 	if (!record?.sha) return;
 	if (!record.config) {
