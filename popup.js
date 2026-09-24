@@ -2,7 +2,7 @@
 
 const CHUNK_BYTES = 20 * 1024 * 1024;
 const SETTINGS_KEYS = ["botToken", "channelId"];
-const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "botToken", "channelId", "botStatus", "rocket", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute"];
+const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "botToken", "channelId", "botStatus", "botDot", "flyer", "tabs", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute"];
 const els = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 let selection = null;
 let payload = null;
@@ -14,7 +14,12 @@ let botCheckRun = 0;
 let botCheckTimer = 0;
 
 els.version.textContent = "v" + chrome.runtime.getManifest().version;
-function setStatus(message, kind = "info") { els.status.textContent = message; els.status.className = `status ${kind}`; }
+// Restarts a one-shot CSS animation class, even if it is still running.
+function replayAnimation(element, className) { element.classList.remove(className); void element.offsetWidth; element.classList.add(className); }
+function setStatus(message, kind = "info") {
+  els.status.textContent = message; els.status.className = `status ${kind}`;
+  if (kind !== "info") replayAnimation(els.status, "pop");
+}
 function base64url(bytes) { return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
 function escapeHtml(value) { return String(value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 async function readBytes(file) { return new Uint8Array(await file.arrayBuffer()); }
@@ -41,7 +46,7 @@ function setFolderSelection(fileList) {
 async function prepareSelection() {
   if (!selection) return;
   preparing = true; payload = null; els.send.disabled = true; els.drop.classList.add("has-file");
-  els.dropLabel.innerHTML = `<div class="name">${escapeHtml(selection.name)}${selection.kind === "folder" ? "/" : ""}</div><div class="size">Compressing ${selection.files.length} file(s)…</div>`;
+  els.dropLabel.innerHTML = `<div class="name">${escapeHtml(selection.name)}${selection.kind === "folder" ? "/" : ""}</div><div class="size">Compressing ${selection.files.length} file(s)<span class="dots"></span></div>`;
   setStatus("Compressing…");
   try {
     const input = {};
@@ -56,6 +61,8 @@ async function prepareSelection() {
     payload = { kind: selection.kind, name: selection.name, bytes, sha, symmetricKey, originalSize: selection.files.reduce((n, r) => n + r.file.size, 0), entries: selection.files.length };
     els.dropLabel.innerHTML = `<div class="name">${escapeHtml(selection.name)}${selection.kind === "folder" ? "/" : ""}</div><div class="size">${humanSize(payload.originalSize)} → ${humanSize(bytes.length)} encrypted<br>${Math.ceil(bytes.length / CHUNK_BYTES)} chunks</div>`;
     setStatus("Ready. The file token will be stored after sending.", "ok");
+    replayAnimation(els.drop, "pop");
+    requestAnimationFrame(() => replayAnimation(els.send, "ready"));
   } catch (error) { setStatus("Preparation failed: " + error.message, "err"); els.dropLabel.textContent = "Click for a file, or drop a file / folder"; els.drop.classList.remove("has-file"); }
   finally { preparing = false; refreshSendState(); }
 }
@@ -91,7 +98,7 @@ function applyUploadState(state) {
     activeUpload = null;
     resetUploadProgress();
     refreshSendState();
-    if (state.outcome === "ok") { playSound("send"); setStatus(`Sent ${state.name || old.name}: ${state.total || old.total} chunk(s) 🚀`, "ok"); launchRocket(); }
+    if (state.outcome === "ok") { playSound("send"); setStatus(`Sent ${state.name || old.name}: ${state.total || old.total} chunk(s) 🚀`, "ok"); launchFlyer("🚀", "fly"); }
     else if (state.outcome === "canceled") {
       if (state.error?.includes("cleanup failed")) setStatus(state.error, "err");
       else setStatus("Upload canceled and partial Discord messages removed.", "info");
@@ -106,11 +113,10 @@ function applyUploadState(state) {
   }
 }
 
-function launchRocket() {
-  // Restart the fly-by even if the previous one is still running.
-  els.rocket.classList.remove("fly");
-  void els.rocket.offsetWidth;
-  els.rocket.classList.add("fly");
+function launchFlyer(emoji, className) {
+  els.flyer.textContent = emoji;
+  els.flyer.className = "flyer";
+  replayAnimation(els.flyer, className);
 }
 
 let audioContext = null;
@@ -142,7 +148,10 @@ document.addEventListener("mouseover", (event) => { const button = event.target.
 document.addEventListener("mouseout", (event) => { if (!event.relatedTarget?.closest?.("button")) hoveredButton = null; });
 document.addEventListener("click", (event) => { const button = event.target.closest("button"); if (button && button !== els.mute) playSound("click"); }, true);
 
-function setBotStatus(message, kind) { els.botStatus.textContent = message; els.botStatus.className = `tokenstatus ${kind}`; }
+function setBotStatus(message, kind) {
+  els.botStatus.textContent = message; els.botStatus.className = `tokenstatus ${kind}`;
+  els.botDot.className = `dot ${kind}`;
+}
 async function checkBot() {
   const run = ++botCheckRun;
   if (!config.token || !config.channelId) { setBotStatus("Enter the bot token and channel ID", "bad"); return false; }
@@ -167,6 +176,7 @@ function onBotInput() {
 }
 function requireConfig() { if (!config.token || !config.channelId) throw new Error("set the bot token and channel ID first"); }
 function showTab(download) {
+  els.tabs.classList.toggle("download", download);
   els.tabSend.classList.toggle("active", !download); els.tabDownload.classList.toggle("active", download);
   els.sendPanel.classList.toggle("active", !download); els.downloadPanel.classList.toggle("active", download);
   if (download) refreshFiles();
@@ -179,7 +189,7 @@ function renderFiles(files) {
   els.fileList.textContent = "";
   if (!files.length) { els.fileList.innerHTML = '<div class="empty">No complete files found.</div>'; return; }
   for (const file of files) {
-    const item = document.createElement("div"); item.className = "item";
+    const item = document.createElement("div"); item.className = "item"; item.style.setProperty("--i", els.fileList.children.length);
     const meta = document.createElement("div"); meta.className = "meta";
     const name = document.createElement("div"); name.className = "fname"; name.textContent = file.name + (file.kind === "folder" ? "/" : "");
     const sub = document.createElement("div"); sub.className = file.available ? "sub" : "sub incomplete";
@@ -219,7 +229,9 @@ async function deleteFileToken(file, button) {
     const token = `${file.sha}.${symmetricKey}`;
     await chrome.storage.local.remove([...(data.lastFileToken === token ? ["lastFileToken"] : []), ...(data.lastKey === token ? ["lastKey"] : [])]);
     setStatus(`Deleted ${file.name}.`, "ok");
-    refreshFiles();
+    const item = button.closest(".item");
+    item?.classList.add("removing");
+    setTimeout(refreshFiles, item ? 280 : 0);
   } catch (error) { setStatus("Delete failed: " + error.message, "err"); }
   finally { button.disabled = false; }
 }
@@ -268,7 +280,7 @@ async function downloadFile(file, button) {
     if (dirHandle) await saveFolder(dirHandle, entries);
     else if (file.kind === "file" && names.length === 1) await saveBytes(entries[names[0]], names[0].split("/").pop());
     else await saveBytes(zip, file.name.replace(/\/$/, "") + ".zip");
-    els.downloadBar.style.width = "100%"; playSound("download"); setStatus(`Downloaded ${file.name} ✓`, "ok");
+    els.downloadBar.style.width = "100%"; playSound("download"); setStatus(`Downloaded ${file.name} ✓`, "ok"); launchFlyer("📦", "drop-in");
   } catch (error) { if (error.name !== "AbortError") setStatus("Download failed: " + error.message, "err"); }
   finally { button.disabled = false; button.textContent = "Download"; setTimeout(() => { els.downloadProgress.style.display = "none"; }, 1200); }
 }
