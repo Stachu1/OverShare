@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "OverShare",
-  "version": "3.6.0",
-  "description": "Send large files and folders through your own Discord bot: compressed, AES-256 encrypted, split into chunks and SHA-256 verified.",
+  "version": "3.7.0",
+  "description": "Send large files and folders through your own Discord bot: streamed, compressed, AES-256 encrypted and split into chunks.",
   "action": {
     "default_title": "OverShare",
     "default_popup": "popup.html"

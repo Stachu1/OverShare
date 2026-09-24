@@ -6,6 +6,22 @@
 
 const API = "https://discord.com/api/v10";
 const MANIFEST_MARKER = "OVERSHARE|";
+const CHUNK_BYTES = 20 * 1024 * 1024;
+
+// A transfer is one zip, streamed and cut into pieces that are each encrypted with
+// AES-GCM and uploaded as "<id>.<n>". The IV holds the piece number and the
+// authenticated data holds the transfer ID, the number and whether it is the
+// last piece, so a changed, reordered, swapped or missing piece fails to decrypt.
+// The manifest is posted last, once the piece count is known.
+const PLAIN_CHUNK_BYTES = CHUNK_BYTES - 16; // AES-GCM adds a 16-byte tag
+function chunkIv(prefix, index) {
+  const iv = new Uint8Array(12);
+  iv.set(prefix);
+  new DataView(iv.buffer).setUint32(8, index);
+  return iv;
+}
+function chunkAad(sha, index, final) { return new TextEncoder().encode(`OVERSHARE2|${sha}|${index}|${final ? 1 : 0}`); }
+function importChunkKey(encodedKey, usage) { return crypto.subtle.importKey("raw", base64urlDecode(encodedKey), "AES-GCM", false, [usage]); }
 // Popup <-> engine messages. A BroadcastChannel (unlike chrome.runtime
 // messaging) can carry Blobs and directory handles.
 const ENGINE_CHANNEL = "overshare";
@@ -17,11 +33,7 @@ function humanSize(bytes) {
   return `${n.toFixed(n < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
 }
 
-async function sha256hex(bytes) {
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
+function base64urlEncode(bytes) { return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
 function base64urlDecode(value) {
   const binary = atob(value.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat(-value.length & 3));
   return Uint8Array.from(binary, (c) => c.charCodeAt(0));
@@ -121,7 +133,9 @@ function shasFromKeys(keys) {
 }
 
 // Finds the manifest and chunk attachments of every transfer whose file token is
-// stored. Returns { files } for the list and { found } with chunk URLs.
+// stored. Returns { files } for the list and { found } with chunk URLs. Transfers
+// from versions before 3.7 use another format and show as missing (they can
+// still be deleted).
 async function findTransfers(config, keys) {
   const wanted = shasFromKeys(keys);
   const found = {}, partsBySha = {};
@@ -130,16 +144,18 @@ async function findTransfers(config, keys) {
     if (content.startsWith(MANIFEST_MARKER)) {
       let manifest = null;
       try { manifest = JSON.parse(content.split("\n", 1)[0].slice(MANIFEST_MARKER.length)); } catch (_) {}
-      if (manifest && wanted.has(manifest.sha) && !found[manifest.sha]) found[manifest.sha] = { manifest, parts: {} };
+      if (manifest?.v === 2 && wanted.has(manifest.sha) && !found[manifest.sha]) found[manifest.sha] = { manifest, parts: {} };
     }
     for (const attachment of message.attachments || []) {
-      const match = (attachment.filename || "").match(/^([^.]+)\.(\d+)_(\d+)$/);
+      const match = (attachment.filename || "").match(/^([^.]+)\.(\d+)$/);
       if (match && wanted.has(match[1])) (partsBySha[match[1]] ??= {})[Number(match[2])] = { url: attachment.url, size: attachment.size || 0 };
     }
   }
   const files = [...wanted].sort().map((sha) => {
     const item = found[sha];
-    if (!item) return { sha, name: "Unknown transfer", available: false, manifestFound: false, missingFile: true, missingChunks: null };
+    // The manifest is posted last, so chunks without one are a send that never finished.
+    const orphanChunks = Object.keys(partsBySha[sha] || {}).length;
+    if (!item) return { sha, name: orphanChunks ? "Unfinished upload" : "Unknown transfer", available: false, manifestFound: false, missingFile: !orphanChunks, missingChunks: null, orphanChunks };
     item.parts = partsBySha[sha] || {};
     const total = Number(item.manifest.total);
     let have = 0;
@@ -167,35 +183,37 @@ async function deleteTransfers(config, shas, onProgress) {
   return deleted;
 }
 
-// Downloads, verifies and decrypts a transfer. onProgress receives (bytesDone, totalBytes).
-async function downloadTransfer(config, key, onProgress) {
-  const [sha, encodedKey] = key.split(".", 2);
-  if (!sha || !encodedKey) throw new Error("invalid file token");
-  const { found } = await findTransfers(config, [key]);
-  const item = found[sha];
-  if (!item) throw new Error("file manifest not found");
-  const total = Number(item.manifest.total);
-  const expected = Number(item.manifest.encryptedSize) || 0;
-  const chunks = [];
+// Yields each decrypted piece in order, so only one is in memory at a time.
+// onProgress receives (bytesDone, totalBytes) of the encrypted download.
+async function* decryptChunks(item, encodedKey, onProgress) {
+  const { sha, iv, total: totalText, encryptedSize } = item.manifest;
+  const total = Number(totalText);
+  const key = await importChunkKey(encodedKey, "decrypt");
+  const prefix = base64urlDecode(iv);
   let received = 0;
   for (let index = 1; index <= total; index++) {
-    if (!item.parts[index]) throw new Error("not all chunks are available");
-    const response = await fetch(item.parts[index].url);
+    const part = item.parts[index];
+    if (!part) throw new Error("not all chunks are available");
+    const response = await fetch(part.url);
     if (!response.ok) throw new Error(`chunk ${index} download failed: HTTP ${response.status}`);
+    const pieces = [];
+    let length = 0;
     const reader = response.body.getReader();
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      chunks.push(value);
-      received += value.length;
-      onProgress(received, Math.max(expected, received));
+      pieces.push(value); length += value.length; received += value.length;
+      onProgress(received, Math.max(Number(encryptedSize) || 0, received));
+    }
+    const ciphertext = new Uint8Array(length);
+    let offset = 0;
+    for (const piece of pieces) { ciphertext.set(piece, offset); offset += piece.length; }
+    pieces.length = 0;
+    try {
+      yield new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: chunkIv(prefix, index), additionalData: chunkAad(sha, index, index === total) }, key, ciphertext));
+    } catch (error) {
+      if (error.name === "OperationError") throw new Error(`chunk ${index} failed its integrity check (wrong file token, or the chunk was changed)`);
+      throw error;
     }
   }
-  const encrypted = new Uint8Array(received);
-  let offset = 0;
-  for (const chunk of chunks) { encrypted.set(chunk, offset); offset += chunk.length; }
-  if (await sha256hex(encrypted) !== sha) throw new Error("encrypted payload SHA-256 does not match manifest");
-  const cryptoKey = await crypto.subtle.importKey("raw", base64urlDecode(encodedKey), "AES-GCM", false, ["decrypt"]);
-  const zip = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: encrypted.subarray(0, 12) }, cryptoKey, encrypted.subarray(12)));
-  return { zip, manifest: item.manifest };
 }

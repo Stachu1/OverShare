@@ -6,16 +6,18 @@ A Chrome/Edge extension for sending large files and folders through Discord usin
 
 **Sending**
 
-1. The file or folder is zipped in the popup ([fflate](https://github.com/101arrowz/fflate)).
-2. The zip is encrypted with **AES-256-GCM** using a new random key for each transfer.
-3. A **SHA-256** hash of the encrypted data becomes the transfer's ID.
-4. The background engine posts a manifest message (`OVERSHARE|{name, size, chunk count, …}`) to the channel, then uploads the encrypted data as 20 MB attachments named `<sha>.<n>_<total>`. Uploads keep going if you close the popup.
-5. The **file token** `<sha>.<key>` is saved in the extension. It's the only way to find and decrypt the file, and the key never goes to Discord.
+1. Selecting a file or folder picks a random transfer ID and a new random **AES-256** key. The **file token** is `<id>.<key>`.
+2. The background engine reads the files 4 MB at a time and compresses them into one zip as it goes ([fflate](https://github.com/101arrowz/fflate)). Every file keeps its path inside the folder.
+3. The zip is cut into 20 MB pieces. Each one is encrypted with **AES-256-GCM** and uploaded as an attachment named `<id>.<n>` as soon as it's ready. Only about one piece is in memory at a time, whatever the file size.
+4. When the last piece is up, a manifest message (`OVERSHARE|{name, size, chunk count, …}`) is posted. Uploads keep going if you close the popup.
+5. The file token is saved in the extension. It's the only way to find and decrypt the file, and the key never goes to Discord.
+
+Each piece's encryption covers the transfer ID, the piece's number and whether it's the last one. A changed, reordered, missing or cut-off piece fails to decrypt instead of producing a damaged file.
 
 **Downloading**
 
 1. For each file token you have, the extension searches the channel history for the matching manifest and chunks, and shows whether the file is complete.
-2. It downloads the chunks, checks the SHA-256, decrypts and unzips, then saves the file. Folders are written back as folders.
+2. It downloads the pieces one at a time, decrypts each, and unzips as it goes, writing files out as they appear. Folders are written back as folders.
 
 **Why no server is needed:** Discord rejects bot-token requests that carry a browser `User-Agent`. The extension has a `declarativeNetRequest` rule (`rules.json`) that sets `User-Agent: DiscordBot (…)` on its requests to `discord.com/api/`, so the browser can call the bot API directly. An extension can change this header; an ordinary web page can't.
 
@@ -77,6 +79,8 @@ This is why OverShare should have **its own bot and its own server**:
 ## Limits and good to know
 
 - Chunks are 20 MB. If sending fails with a `413` error, your server's upload limit is lower than that.
+- Memory use stays about the same whatever the file size (a few hundred MB at most), because files are read, compressed, encrypted and uploaded a piece at a time.
+- Transfers sent with versions before 3.7 use an older format and can't be downloaded any more; they show as missing, and you can still delete them.
 - Sends, downloads and deletes run in the background and keep going after you close the popup. Closing the browser stops them.
 - Cancelling or a failed send removes the chunks already sent. So does a send cut off by closing the browser: its leftovers are removed the next time the browser starts. If that cleanup can't reach Discord, the partial file stays in the Download list so you can delete it there.
 - For a folder download, the popup asks where to save before the download starts. If the browser doesn't keep write access to that folder once the popup closes, the folder is saved as a zip instead.
@@ -89,8 +93,8 @@ This is why OverShare should have **its own bot and its own server**:
 |---|---|
 | `manifest.json` | Extension manifest (MV3) |
 | `rules.json` | Sets the `DiscordBot` User-Agent on Discord API requests |
-| `popup.html`, `popup.js` | The popup: compression, encryption, file list, progress |
-| `offscreen.html`, `engine.js` | Background engine: runs sends, downloads and deletes, and cleans up partial sends |
+| `popup.html`, `popup.js` | The popup: file selection, settings, file list, progress |
+| `offscreen.html`, `engine.js` | Background engine: streams sends (zip, encrypt, upload) and downloads, runs deletes, cleans up partial sends |
 | `background.js` | Service worker: starts the engine (also after a restart with an interrupted send) and saves files and storage for it |
 | `shared.js` | Discord API client, transfer search, delete, download and decrypt, and speed/ETA helpers |
 | `fflate.js` | Zip library |

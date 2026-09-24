@@ -1,12 +1,10 @@
 "use strict";
 
-const CHUNK_BYTES = 20 * 1024 * 1024;
 const SETTINGS_KEYS = ["botToken", "channelId"];
 const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "botToken", "channelId", "botStatus", "botDot", "flyer", "tabs", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute"];
 const els = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 let selection = null;
 let payload = null;
-let preparing = false;
 let muted = false;
 let activeUpload = null;
 let activeDownload = null;
@@ -23,9 +21,7 @@ function setStatus(message, kind = "info") {
   els.status.textContent = message; els.status.className = `status ${kind}`;
   if (kind !== "info") replayAnimation(els.status, "pop");
 }
-function base64url(bytes) { return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
 function escapeHtml(value) { return String(value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
-async function readBytes(file) { return new Uint8Array(await file.arrayBuffer()); }
 
 async function readEntry(entry, prefix) {
   return new Promise((resolve) => {
@@ -46,28 +42,28 @@ function setFolderSelection(fileList) {
   const name = (files[0].webkitRelativePath || files[0].name).split("/")[0];
   selection = { kind: "folder", name, files: files.map((file) => ({ file, path: file.webkitRelativePath || file.name })) }; prepareSelection();
 }
-async function prepareSelection() {
+// Selecting only picks the transfer ID and key. The engine compresses and
+// encrypts while it sends, a piece at a time, so nothing is loaded here.
+function prepareSelection() {
   if (!selection) return;
-  preparing = true; payload = null; els.send.disabled = true; els.drop.classList.add("has-file");
-  els.dropLabel.innerHTML = `<div class="name">${escapeHtml(selection.name)}${selection.kind === "folder" ? "/" : ""}</div><div class="size">Compressing ${selection.files.length} file(s)<span class="dots"></span></div>`;
-  setStatus("Compressing…");
-  try {
-    const input = {};
-    for (const record of selection.files) input[record.path] = [await readBytes(record.file), { level: 6, mtime: new Date(Date.UTC(1985, 0, 1)) }];
-    const zipped = fflate.zipSync(input);
-    const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt"]);
-    const rawKey = new Uint8Array(await crypto.subtle.exportKey("raw", key));
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const encrypted = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, zipped));
-    const bytes = new Uint8Array(iv.length + encrypted.length); bytes.set(iv); bytes.set(encrypted, iv.length);
-    const sha = await sha256hex(bytes); const symmetricKey = base64url(rawKey);
-    payload = { kind: selection.kind, name: selection.name, bytes, sha, symmetricKey, originalSize: selection.files.reduce((n, r) => n + r.file.size, 0), entries: selection.files.length };
-    els.dropLabel.innerHTML = `<div class="name">${escapeHtml(selection.name)}${selection.kind === "folder" ? "/" : ""}</div><div class="size">${humanSize(payload.originalSize)} → ${humanSize(bytes.length)} encrypted<br>${Math.ceil(bytes.length / CHUNK_BYTES)} chunks</div>`;
-    setStatus("Ready. The file token will be stored after sending.", "ok");
-    replayAnimation(els.drop, "pop");
-    requestAnimationFrame(() => replayAnimation(els.send, "ready"));
-  } catch (error) { setStatus("Preparation failed: " + error.message, "err"); els.dropLabel.textContent = "Click for a file, or drop a file / folder"; els.drop.classList.remove("has-file"); }
-  finally { preparing = false; refreshSendState(); }
+  const hex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+  payload = {
+    kind: selection.kind, name: selection.name, files: selection.files,
+    sha: hex(crypto.getRandomValues(new Uint8Array(32))), symmetricKey: base64urlEncode(crypto.getRandomValues(new Uint8Array(32))),
+    originalSize: selection.files.reduce((n, r) => n + r.file.size, 0), entries: selection.files.length,
+  };
+  els.drop.classList.add("has-file");
+  els.dropLabel.innerHTML = `<div class="name">${escapeHtml(selection.name)}${selection.kind === "folder" ? "/" : ""}</div><div class="size">${humanSize(payload.originalSize)} · ${payload.entries} file(s)<br>Compressed and encrypted while sending</div>`;
+  setStatus("Ready. The file token will be stored after sending.", "ok");
+  replayAnimation(els.drop, "pop");
+  requestAnimationFrame(() => replayAnimation(els.send, "ready"));
+  refreshSendState();
+}
+function clearSelection() {
+  selection = null; payload = null;
+  els.file.value = ""; els.folder.value = "";
+  els.drop.classList.remove("has-file");
+  els.dropLabel.textContent = "Click for a file, or drop a file / folder";
 }
 function refreshSendState() {
   if (activeUpload) {
@@ -78,7 +74,7 @@ function refreshSendState() {
   }
   els.send.classList.remove("cancel");
   els.send.textContent = "Send encrypted file";
-  els.send.disabled = !payload || preparing;
+  els.send.disabled = !payload;
 }
 function resetUploadProgress() {
   els.progress.style.display = "none";
@@ -92,7 +88,7 @@ function applyUploadState(state) {
       ? Math.min(100, Math.round((state.bytesSent / state.totalBytes) * 100))
       : Math.min(100, Math.round(((state.sent || 0) / (state.total || 1)) * 100));
     els.bar.style.width = percent + "%";
-    const chunk = `chunk ${Math.min((state.sent || 0) + 1, state.total || 1)}/${state.total || 1}`;
+    const chunk = state.total ? `chunk ${Math.min((state.sent || 0) + 1, state.total)}/${state.total}` : `chunk ${(state.sent || 0) + 1}`;
     if (state.cleaning) setStatus(`Removing sent chunks of ${state.name}…`, "info");
     else if (state.canceling) setStatus(`Canceling upload… ${percent}%`, "info");
     else setStatus(`Sending ${chunk} · ${percent}% · ${transferStats(state)}`, "info");
@@ -201,7 +197,9 @@ function renderFiles(files) {
     const meta = document.createElement("div"); meta.className = "meta";
     const name = document.createElement("div"); name.className = "fname"; name.textContent = file.name + (file.kind === "folder" ? "/" : "");
     const sub = document.createElement("div"); sub.className = file.available ? "sub" : "sub incomplete";
-    sub.textContent = file.available ? `${humanSize(file.originalSize)} · ${file.total} chunk(s) · ${file.kind}` : file.manifestFound ? `${humanSize(file.originalSize)} · missing ${file.missingChunks} chunk(s)` : "missing from channel";
+    sub.textContent = file.available ? `${humanSize(file.originalSize)} · ${file.total} chunk(s) · ${file.kind}`
+      : file.manifestFound ? `${humanSize(file.originalSize)} · missing ${file.missingChunks} chunk(s)`
+      : file.orphanChunks ? `upload never finished · ${file.orphanChunks} chunk(s) left behind` : "missing from channel";
     meta.append(name, sub);
     const actions = document.createElement("div"); actions.className = "item-actions";
     const button = document.createElement("button"); button.textContent = "Download"; button.addEventListener("click", () => downloadFile(file));
@@ -301,7 +299,12 @@ els.drop.addEventListener("drop", async (event) => {
   if (items[0]?.webkitGetAsEntry) { const records = (await Promise.all(items.map((item) => item.webkitGetAsEntry()).filter(Boolean).map((entry) => readEntry(entry, "")))).flat(); if (records.length === 1 && !records[0].path.includes("/")) setFileSelection(records[0].file); else if (records.length) { selection = { kind: "folder", name: records[0].path.split("/")[0], files: records }; prepareSelection(); } }
   else if (event.dataTransfer.files.length) { const files = [...event.dataTransfer.files]; if (files.length === 1) setFileSelection(files[0]); else { selection = { kind: "multiplefiles", name: "overshare-bundle", files: files.map((file) => ({ file, path: file.name })) }; prepareSelection(); } }
 });
-els.keyCopy.addEventListener("click", async () => { if (payload?.symmetricKey) { await navigator.clipboard.writeText(`${payload.sha}.${payload.symmetricKey}`); setStatus("File token copied to clipboard.", "ok"); } else setStatus("Select a file first.", "info"); });
+els.keyCopy.addEventListener("click", async () => {
+  const source = payload || (activeUpload?.symmetricKey ? activeUpload : null);
+  if (!source) { setStatus("Select a file first.", "info"); return; }
+  await navigator.clipboard.writeText(`${source.sha}.${source.symmetricKey}`);
+  setStatus("File token copied to clipboard.", "ok");
+});
 els.loadToken.addEventListener("click", async () => {
   const value = els.downloadToken.value.trim();
   const match = value.match(/^([a-f0-9]{64})\.([A-Za-z0-9_-]+)$/i);
@@ -360,14 +363,16 @@ els.send.addEventListener("click", async () => {
     transferChannel.postMessage({ type: "cancelUpload" });
     return;
   }
-  if (!payload || preparing) return;
+  if (!payload) return;
   if (!config.token || !config.channelId) { setStatus("Set the bot token and channel ID first.", "err"); return; }
   els.send.disabled = true; els.send.textContent = "Starting…"; els.progress.style.display = "block"; els.bar.style.width = "0%";
-  const total = Math.max(1, Math.ceil(payload.bytes.length / CHUNK_BYTES));
-  const metadata = { sha: payload.sha, name: payload.name, kind: payload.kind, originalSize: payload.originalSize, encryptedSize: payload.bytes.length, total };
+  const metadata = { sha: payload.sha, name: payload.name, kind: payload.kind, originalSize: payload.originalSize };
   try {
-    transferChannel.postMessage({ type: "startUpload", job: { metadata, config, symmetricKey: payload.symmetricKey, bytes: payload.bytes.buffer } }, [payload.bytes.buffer]);
-    activeUpload = { name: payload.name, sha: payload.sha, total, sent: 0 };
+    // File objects cross to the engine by reference; their contents are read there, piece by piece.
+    transferChannel.postMessage({ type: "startUpload", job: { metadata, config, symmetricKey: payload.symmetricKey, files: payload.files } });
+    activeUpload = { name: payload.name, sha: payload.sha, symmetricKey: payload.symmetricKey, total: null, sent: 0 };
+    // Each send gets a fresh ID and key, so the selection is used up.
+    clearSelection();
     refreshSendState();
   } catch (error) { setStatus("Send failed: " + error.message, "err"); refreshSendState(); }
 });

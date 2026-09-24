@@ -4,7 +4,12 @@
 // keep going after the popup closes, and cleans up partial sends: on cancel, on
 // error, and after a browser restart that interrupted one.
 
-const CHUNK_BYTES = 20 * 1024 * 1024;
+// Files are read and compressed this much at a time, so memory stays near one
+// chunk no matter how big the transfer is.
+const READ_SLICE_BYTES = 4 * 1024 * 1024;
+// Compressed data is fed to the unzip in slices this small, which bounds how much
+// a highly compressible file can expand before it is written out.
+const UNZIP_SLICE_BYTES = 64 * 1024;
 // Discord may still create a chunk message whose upload was aborted just as it
 // finished, so cleanup searches the channel a second time after this delay.
 const CLEANUP_RECHECK_MS = 3000;
@@ -60,43 +65,96 @@ async function cleanUpUpload(record) {
 }
 function cleanupFailureText(error) { return `removing the sent chunks failed (${error.message}). The partial file is in the Download list; delete it there.`; }
 
-async function uploadBytes(job) {
-	const { metadata, config } = job;
-	const bytes = new Uint8Array(job.bytes);
-	const { sha, total } = metadata;
-	const record = { name: metadata.name, sha, symmetricKey: job.symmetricKey, total, config };
-	active = { name: metadata.name, sent: 0, total, bytesSent: 0, totalBytes: bytes.length, meter: new TransferMeter(bytes.length), cleaning: false };
+// Collects zip output and hands it back in exact chunk-sized pieces.
+class ByteQueue {
+	constructor() { this.parts = []; this.length = 0; }
+	push(data) { if (data.length) { this.parts.push(data); this.length += data.length; } }
+	take(count) {
+		const out = new Uint8Array(count);
+		let offset = 0;
+		while (offset < count) {
+			const part = this.parts[0], need = count - offset;
+			if (part.length <= need) { out.set(part, offset); offset += part.length; this.parts.shift(); }
+			else { out.set(part.subarray(0, need), offset); this.parts[0] = part.subarray(need); offset = count; }
+		}
+		this.length -= count;
+		return out;
+	}
+}
+// Zip timestamps can't go before 1980.
+function zipTime(file) { return new Date(Math.max(file.lastModified || 0, Date.UTC(1980, 0, 2))); }
+
+async function uploadFiles(job) {
+	const { metadata, config, files } = job;
+	const { sha, name, originalSize } = metadata;
+	const record = { name, sha, symmetricKey: job.symmetricKey, total: null, config };
+	active = { name, sent: 0, total: null, bytesSent: 0, totalBytes: originalSize, meter: new TransferMeter(originalSize), cleaning: false };
 	abortController = new AbortController();
 	const path = `/channels/${config.channelId}/messages`;
 	try {
 		// Stored first, so a browser restart mid-send can still find and remove the chunks.
 		await storage("set", { activeUpload: record });
 		publishActive();
-		const manifest = { sha, name: metadata.name, kind: metadata.kind, originalSize: metadata.originalSize, encryptedSize: bytes.length, total };
-		await discordRequest(config, "POST", path, { json: { content: MANIFEST_MARKER + JSON.stringify(manifest) }, signal: abortController.signal });
-		for (let index = 0; index < total; index++) {
-			throwIfCanceled();
-			const chunk = bytes.subarray(index * CHUNK_BYTES, (index + 1) * CHUNK_BYTES);
+		const key = await importChunkKey(job.symmetricKey, "encrypt");
+		const prefix = crypto.getRandomValues(new Uint8Array(8));
+		const queue = new ByteQueue();
+		let zipError = null, zipDone = false;
+		const zip = new fflate.Zip((error, data, final) => { if (error) zipError = error; else { queue.push(data); if (final) zipDone = true; } });
+		let inputRead = 0, lastCutInput = 0, index = 0, encryptedSize = 0;
+
+		// Progress is counted in original bytes, spread over each piece as it uploads.
+		async function sendPiece(plain, final) {
+			index++;
+			const from = lastCutInput, to = final ? originalSize : inputRead;
+			lastCutInput = to;
+			const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: chunkIv(prefix, index), additionalData: chunkAad(sha, index, final) }, key, plain));
+			encryptedSize += ciphertext.length;
 			const form = new FormData();
 			form.append("payload_json", JSON.stringify({}));
-			form.append("files[0]", new Blob([chunk]), `${sha}.${index + 1}_${total}`);
-			const before = index * CHUNK_BYTES;
+			form.append("files[0]", new Blob([ciphertext]), `${sha}.${index}`);
 			await discordUpload(config, path, form, {
 				signal: abortController.signal,
 				onProgress: (loaded) => {
-					// loaded includes the multipart framing, so cap it at the chunk size.
-					active.bytesSent = before + Math.min(loaded, chunk.length);
+					active.bytesSent = from + (to - from) * Math.min(1, loaded / ciphertext.length);
 					if (performance.now() - lastPublish >= PUBLISH_INTERVAL_MS) publishActive();
 				},
 			});
-			active.sent = index + 1;
-			active.bytesSent = before + chunk.length;
+			active.sent = index;
+			active.bytesSent = to;
 			publishActive();
 		}
+		// Sends every full piece that can't be the last one; the last is sent after the zip ends.
+		async function drain() {
+			if (zipError) throw zipError;
+			while (queue.length > PLAIN_CHUNK_BYTES) {
+				throwIfCanceled();
+				await sendPiece(queue.take(PLAIN_CHUNK_BYTES), false);
+			}
+		}
+
+		for (const { file, path: filePath } of files) {
+			const entry = new fflate.ZipDeflate(filePath, { level: 6, mtime: zipTime(file) });
+			zip.add(entry);
+			if (!file.size) entry.push(new Uint8Array(0), true);
+			for (let offset = 0; offset < file.size; offset += READ_SLICE_BYTES) {
+				throwIfCanceled();
+				const slice = new Uint8Array(await file.slice(offset, offset + READ_SLICE_BYTES).arrayBuffer());
+				inputRead += slice.length;
+				entry.push(slice, offset + READ_SLICE_BYTES >= file.size);
+				await drain();
+			}
+		}
+		zip.end();
+		await drain();
+		if (!zipDone) throw new Error("the zip stream did not finish");
 		throwIfCanceled();
+		await sendPiece(queue.take(queue.length), true);
+		throwIfCanceled();
+		const manifest = { v: 2, sha, name, kind: metadata.kind, originalSize, encryptedSize, total: index, iv: base64urlEncode(prefix) };
+		await discordRequest(config, "POST", path, { json: { content: MANIFEST_MARKER + JSON.stringify(manifest) }, signal: abortController.signal });
 		await storage("set", { [`${sha}.symmetricKey`]: job.symmetricKey, lastFileToken: `${sha}.${job.symmetricKey}` });
 		await storage("remove", ["activeUpload"]);
-		publish({ active: false, outcome: "ok", name: metadata.name, total });
+		publish({ active: false, outcome: "ok", name, total: index });
 	} catch (error) {
 		const canceled = cancelRequested || error.name === "AbortError";
 		active.cleaning = true;
@@ -144,42 +202,91 @@ function publishActiveDownload() {
 	const { speed, eta } = activeDownload.meter ? activeDownload.meter.update(activeDownload.done) : { speed: 0, eta: null };
 	publishDownload({ active: true, sha: activeDownload.sha, name: activeDownload.name, phase: activeDownload.phase, done: activeDownload.done, totalBytes: activeDownload.totalBytes, speed, eta });
 }
-async function saveBytes(bytes, filename) {
-	const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+async function saveBlob(blob, filename) {
+	const url = URL.createObjectURL(blob);
 	try { await background({ type: "download", url, filename, saveAs: true }); }
 	finally { setTimeout(() => URL.revokeObjectURL(url), 10 * 60 * 1000); }
 }
-async function saveFolder(dirHandle, files) {
-	for (const [path, bytes] of Object.entries(files)) {
-		if (path.endsWith("/")) continue;
-		const segments = path.split("/"); const filename = segments.pop(); let current = dirHandle;
-		for (const segment of segments) if (segment) current = await current.getDirectoryHandle(segment, { create: true });
-		const handle = await current.getFileHandle(filename, { create: true }); const writer = await handle.createWritable(); await writer.write(bytes); await writer.close();
-	}
+// Blob parts are kept by the browser outside this page's memory, and can go to disk.
+function blobWriter(onClose) {
+	const parts = [];
+	return { write: async (data) => { parts.push(new Blob([data])); }, close: async () => onClose(new Blob(parts, { type: "application/octet-stream" })) };
+}
+async function folderWriter(dirHandle, path) {
+	const segments = path.split("/").filter((segment) => segment && segment !== ".");
+	const filename = segments.pop();
+	let current = dirHandle;
+	for (const segment of segments) current = await current.getDirectoryHandle(segment, { create: true });
+	const writable = await (await current.getFileHandle(filename, { create: true })).createWritable();
+	return { write: (data) => writable.write(data), close: () => writable.close() };
+}
+// Streaming unzip whose file writes are async: push() waits until everything it
+// produced has been written, so output never piles up in memory.
+function unzipSink(openFile) {
+	let chain = Promise.resolve(), failure = null;
+	const unzip = new fflate.Unzip((file) => {
+		if (file.name.endsWith("/")) { file.start(); return; }
+		let target = null;
+		chain = chain.then(async () => { target = await openFile(file.name); });
+		file.ondata = (error, data, final) => {
+			if (error) { failure = error; return; }
+			chain = chain.then(() => target.write(data));
+			if (final) chain = chain.then(() => target.close());
+		};
+		file.start();
+	});
+	unzip.register(fflate.UnzipInflate);
+	return {
+		async push(data, final) {
+			for (let offset = 0; offset < data.length || (final && offset === 0); offset += UNZIP_SLICE_BYTES) {
+				const last = final && offset + UNZIP_SLICE_BYTES >= data.length;
+				unzip.push(data.subarray(offset, offset + UNZIP_SLICE_BYTES), last);
+				if (failure) throw failure;
+				await chain;
+				if (last) break;
+			}
+		},
+		done: () => chain,
+	};
 }
 
 async function runDownload(job) {
 	activeDownload = { sha: job.sha, name: job.name, phase: "downloading", done: 0, totalBytes: 0, meter: null };
 	publishActiveDownload();
 	try {
-		const { zip } = await downloadTransfer(job.config, job.key, (done, totalBytes) => {
+		const encodedKey = job.key.split(".", 2)[1];
+		const { found } = await findTransfers(job.config, [job.key]);
+		const item = found[job.sha];
+		if (!item) throw new Error("file manifest not found");
+		const onProgress = (done, totalBytes) => {
 			activeDownload.meter ??= new TransferMeter(totalBytes);
 			activeDownload.done = done; activeDownload.totalBytes = totalBytes;
 			if (performance.now() - lastDownloadPublish >= PUBLISH_INTERVAL_MS) publishActiveDownload();
-		});
-		activeDownload.phase = "saving";
-		publishActiveDownload();
-		const entries = fflate.unzipSync(zip);
-		const names = Object.keys(entries).filter((name) => !name.endsWith("/"));
-		let note = "";
+		};
 		// The folder was picked in the popup; if its write access didn't carry over, save the zip instead.
 		const canWriteFolder = job.dirHandle && await job.dirHandle.queryPermission({ mode: "readwrite" }).catch(() => "denied") === "granted";
-		if (canWriteFolder) await saveFolder(job.dirHandle, entries);
-		else if (job.kind === "file" && names.length === 1) await saveBytes(entries[names[0]], names[0].split("/").pop());
+		const zipName = job.name.replace(/\/$/, "") + ".zip";
+		const note = job.dirHandle && !canWriteFolder ? " (saved as a zip: no write access to the chosen folder)" : "";
+		const saves = [];
+
+		// A folder is unzipped straight into place and a single file is unzipped
+		// into a Blob; anything else is saved as the zip itself.
+		let sink;
+		if (canWriteFolder) sink = unzipSink((entryName) => folderWriter(job.dirHandle, entryName));
+		else if (job.kind === "file") sink = unzipSink(async (entryName) => blobWriter((blob) => { saves.push(saveBlob(blob, entryName.split("/").pop())); }));
 		else {
-			await saveBytes(zip, job.name.replace(/\/$/, "") + ".zip");
-			if (job.dirHandle) note = " (saved as a zip: no write access to the chosen folder)";
+			const zipWriter = blobWriter((blob) => { saves.push(saveBlob(blob, zipName)); });
+			sink = { push: async (data, final) => { await zipWriter.write(data); if (final) await zipWriter.close(); }, done: async () => {} };
 		}
+		const total = Number(item.manifest.total);
+		let index = 0;
+		for await (const plain of decryptChunks(item, encodedKey, onProgress)) {
+			index++;
+			await sink.push(plain, index === total);
+		}
+		activeDownload.phase = "saving"; publishActiveDownload();
+		await sink.done();
+		await Promise.all(saves);
 		publishDownload({ active: false, outcome: "ok", sha: job.sha, text: `Downloaded ${job.name} ✓${note}` });
 	} catch (error) {
 		publishDownload({ active: false, outcome: "error", sha: job.sha, text: `Download failed: ${error.message}` });
@@ -238,7 +345,7 @@ channel.onmessage = async (event) => {
 			return;
 		}
 		cancelRequested = false;
-		await uploadBytes(message.job);
+		await uploadFiles(message.job);
 	} else if (message.type === "cancelUpload") {
 		if (!active || active.cleaning) return;
 		cancelRequested = true;
