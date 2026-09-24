@@ -8,7 +8,7 @@ A Chrome/Edge extension for sending large files and folders through Discord usin
 
 1. Selecting a file or folder picks a random transfer ID and a new random **AES-256** key. The **file token** is `<id>.<key>`.
 2. The background engine reads the files 4 MB at a time and compresses them into one zip as it goes ([fflate](https://github.com/101arrowz/fflate)). Every file keeps its path inside the folder.
-3. The zip is cut into 20 MB pieces. Each one is encrypted with **AES-256-GCM** and becomes an attachment named `<id>.<n>`; they're posted 10 to a message (Discord's attachment limit). Each encrypted piece is written to the extension's private disk storage until its message goes up, so only about one piece is in memory at a time, whatever the file size.
+3. The zip is cut into 20 MB pieces. Each one is encrypted with **AES-256-GCM** and uploaded in its own message as an attachment named `<id>.<n>`. The next piece is compressed and encrypted while the current one uploads, so only about two pieces are in memory at a time, whatever the file size.
 4. When the last piece is up, a manifest message (`OVERSHARE|{name, size, chunk count, …}`) is posted. Uploads keep going if you close the popup.
 5. The file token is saved in the extension. It's the only way to find and decrypt the file, and the key never goes to Discord.
 
@@ -79,7 +79,7 @@ This is why OverShare should have **its own bot and its own server**:
 ## Limits and good to know
 
 - Chunks are 20 MB. If sending fails with a `413` error, your server's upload limit is lower than that.
-- Memory use stays about the same whatever the file size (well under 100 MB), because files are read, compressed and encrypted a piece at a time, and the pieces waiting for their message are kept on disk. A send needs up to 200 MB of free disk space for them.
+- Memory use stays about the same whatever the file size (about two 20 MB pieces plus working buffers), because files are read, compressed, encrypted and uploaded a piece at a time. Chrome frees used buffers lazily, so its Task Manager can show more than that during a send.
 - Transfers sent with versions before 4.0 use an older format and can't be downloaded any more; they show as missing, and you can still delete them.
 - Sends, downloads and deletes run in the background and keep going after you close the popup. Closing the browser stops them.
 - Cancelling or a failed send removes the chunks already sent. So does a send cut off by closing the browser: its leftovers are removed the next time the browser starts. If that cleanup can't reach Discord, the partial file stays in the Download list so you can delete it there.

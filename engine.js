@@ -4,8 +4,8 @@
 // keep going after the popup closes, and cleans up partial sends: on cancel, on
 // error, and after a browser restart that interrupted one.
 
-// Files are read and compressed this much at a time, so memory stays near one
-// message of chunks no matter how big the transfer is.
+// Files are read and compressed this much at a time, so memory stays near two
+// chunks (one uploading, the next being made) no matter how big the transfer is.
 const READ_SLICE_BYTES = 4 * 1024 * 1024;
 // Compressed data is fed to the unzip in slices this small, which bounds how much
 // a highly compressible file can expand before it is written out.
@@ -14,8 +14,6 @@ const UNZIP_SLICE_BYTES = 64 * 1024;
 // finished, so cleanup searches the channel a second time after this delay.
 const CLEANUP_RECHECK_MS = 3000;
 const PUBLISH_INTERVAL_MS = 250;
-// Encrypted chunks are held back and posted this many to a message, Discord's attachment limit.
-const CHUNKS_PER_MESSAGE = 10;
 const channel = new BroadcastChannel(ENGINE_CHANNEL);
 
 let active = null;          // the upload, or the cleanup of one
@@ -83,21 +81,6 @@ class ByteQueue {
 		return out;
 	}
 }
-// Encrypted chunks wait for their message on disk, in the origin private file
-// system, so a message's worth of chunks never has to sit in memory. The
-// upload reads them straight from those files.
-const SPOOL_DIR = "upload-spool";
-async function spoolDir() { return (await navigator.storage.getDirectory()).getDirectoryHandle(SPOOL_DIR, { create: true }); }
-async function clearSpool() {
-	try { await (await navigator.storage.getDirectory()).removeEntry(SPOOL_DIR, { recursive: true }); } catch (_) {}
-}
-async function spoolChunk(dir, name, data) {
-	const handle = await dir.getFileHandle(name, { create: true });
-	const writable = await handle.createWritable();
-	await writable.write(data);
-	await writable.close();
-	return handle.getFile();
-}
 // Zip timestamps can't go before 1980.
 function zipTime(file) { return new Date(Math.max(file.lastModified || 0, Date.UTC(1980, 0, 2))); }
 
@@ -109,41 +92,37 @@ async function uploadFiles(job) {
 	abortController = new AbortController();
 	const startedAt = performance.now();
 	const path = `/channels/${config.channelId}/messages`;
+	// Each chunk is its own message. The next chunk is compressed and encrypted
+	// while the current one uploads; at most one upload runs at a time.
+	let uploading = Promise.resolve(), uploadError = null;
 	try {
 		// Stored first, so a browser restart mid-send can still find and remove the chunks.
 		await storage("set", { activeUpload: record });
 		publishActive();
-		await clearSpool();
-		const spool = await spoolDir();
 		const key = await importChunkKey(job.symmetricKey, "encrypt");
 		const prefix = crypto.getRandomValues(new Uint8Array(8));
 		const queue = new ByteQueue();
 		let zipError = null, zipDone = false;
 		const zip = new fflate.Zip((error, data, final) => { if (error) zipError = error; else { queue.push(data); if (final) zipDone = true; } });
 		let inputRead = 0, lastCutInput = 0, index = 0, encryptedSize = 0, firstId = null;
-		let batch = []; // spooled encrypted chunks waiting to go up in one message
 
 		async function sendPiece(plain, final) {
-			index++;
-			const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: chunkIv(prefix, index), additionalData: chunkAad(sha, index, final) }, key, plain);
+			const number = ++index;
+			const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: chunkIv(prefix, number), additionalData: chunkAad(sha, number, final) }, key, plain);
 			encryptedSize += ciphertext.byteLength;
-			batch.push({ index, file: await spoolChunk(spool, String(index), ciphertext) });
-			if (batch.length === CHUNKS_PER_MESSAGE || final) await sendBatch(final);
-		}
-		// Progress is counted in original bytes, spread over each message as it uploads.
-		async function sendBatch(final) {
-			const pieces = batch;
-			batch = [];
+			// Progress is counted in original bytes, spread over each chunk as it uploads.
 			const from = lastCutInput, to = final ? originalSize : inputRead;
 			lastCutInput = to;
 			const form = new FormData();
 			form.append("payload_json", JSON.stringify({}));
-			let bytes = 0;
-			pieces.forEach(({ index: number, file }, slot) => {
-				form.append(`files[${slot}]`, file, `${sha}.${number}`);
-				bytes += file.size;
-			});
-			active.sending = { from: pieces[0].index, to: pieces[pieces.length - 1].index };
+			form.append("files[0]", new Blob([ciphertext]), `${sha}.${number}`);
+			await uploading;
+			if (uploadError) throw uploadError;
+			throwIfCanceled();
+			uploading = uploadPiece(form, number, from, to, ciphertext.byteLength).catch((error) => { uploadError = error; });
+		}
+		async function uploadPiece(form, number, from, to, bytes) {
+			active.sending = number;
 			publishActive();
 			const message = await discordUpload(config, path, form, {
 				signal: abortController.signal,
@@ -154,14 +133,14 @@ async function uploadFiles(job) {
 			});
 			if (!firstId) firstId = message?.id;
 			if (!firstId) throw new Error("Discord did not return the chunk message");
-			for (const { index: number } of pieces) await spool.removeEntry(String(number)).catch(() => {});
-			active.sent = index;
+			active.sent = number;
 			active.bytesSent = to;
 			publishActive();
 		}
 		// Sends every full piece that can't be the last one; the last is sent after the zip ends.
 		async function drain() {
 			if (zipError) throw zipError;
+			if (uploadError) throw uploadError;
 			while (queue.length > PLAIN_CHUNK_BYTES) {
 				throwIfCanceled();
 				await sendPiece(queue.take(PLAIN_CHUNK_BYTES), false);
@@ -185,6 +164,8 @@ async function uploadFiles(job) {
 		if (!zipDone) throw new Error("the zip stream did not finish");
 		throwIfCanceled();
 		await sendPiece(queue.take(queue.length), true);
+		await uploading;
+		if (uploadError) throw uploadError;
 		throwIfCanceled();
 		const manifest = { v: 3, sha, name, kind: metadata.kind, originalSize, encryptedSize, total: index, iv: base64urlEncode(prefix), firstId };
 		await discordRequest(config, "POST", path, { json: { content: MANIFEST_MARKER + JSON.stringify(manifest) }, signal: abortController.signal });
@@ -196,6 +177,9 @@ async function uploadFiles(job) {
 		const canceled = cancelRequested || error.name === "AbortError";
 		active.cleaning = true;
 		publishActive();
+		// A chunk still uploading must end before cleanup looks for its message.
+		abortController.abort();
+		await uploading;
 		const cleanupError = await cleanUpUpload(record);
 		await storage("remove", ["activeUpload"]).catch(() => {});
 		const lead = canceled ? "Upload canceled" : `Send failed: ${error.message}`;
@@ -204,7 +188,6 @@ async function uploadFiles(job) {
 			text: cleanupError ? `${lead}, but ${cleanupFailureText(cleanupError)}` : `${lead}. Sent chunks were removed from Discord.`,
 		});
 	} finally {
-		await clearSpool();
 		active = null;
 		abortController = null;
 	}
@@ -222,7 +205,6 @@ async function cleanUpInterruptedUpload(record) {
 
 // On startup, a stored activeUpload means the browser closed mid-send.
 const ready = (async () => {
-	await clearSpool(); // chunks spooled by a send the browser cut off
 	const { activeUpload: record } = await storage("get", ["activeUpload"]);
 	if (!record?.sha) return;
 	if (!record.config) {
