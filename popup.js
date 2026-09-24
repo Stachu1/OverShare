@@ -1,7 +1,7 @@
 "use strict";
 
 const SETTINGS_KEYS = ["botToken", "channelId"];
-const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "botToken", "channelId", "botStatus", "botDot", "flyer", "tabs", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute", "tooltip"];
+const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "botToken", "channelId", "botStatus", "botDot", "flyer", "tabs", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute", "tooltip", "clearPick"];
 const els = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 let selection = null;
 let payload = null;
@@ -222,7 +222,7 @@ function updateItemButtons() {
   for (const [sha, { file, downloadButton, deleteButton }] of itemControls) {
     const downloading = activeDownload?.sha === sha, deleting = deletingShas.has(sha);
     downloadButton.disabled = !file.available || !!activeDownload || deleting;
-    downloadButton.textContent = downloading ? "Downloading…" : "Download";
+    downloadButton.textContent = !downloading ? "Download" : activeDownload.phase === "saving" ? "Saving…" : `${activeDownload.percent || 0}%`;
     deleteButton.disabled = deleting || downloading;
     deleteButton.textContent = deleting ? "Deleting…" : "Delete";
   }
@@ -365,6 +365,7 @@ function applyDownloadState(state) {
     activeDownload = state;
     els.downloadProgress.classList.add("show");
     const percent = state.phase === "saving" ? 100 : state.totalBytes ? Math.min(100, Math.round((state.done / state.totalBytes) * 100)) : 0;
+    activeDownload.percent = percent;
     els.downloadBar.style.width = percent + "%";
     if (state.phase === "saving") setStatus(`Decrypting and saving ${state.name}…`, "info");
     else setStatus(`Downloading ${state.name} · ${percent}% · ${transferStats(state)}`, "info");
@@ -378,6 +379,13 @@ function applyDownloadState(state) {
 }
 
 els.drop.addEventListener("click", () => els.file.click());
+els.clearPick.addEventListener("click", (event) => {
+  event.stopPropagation();
+  hideTip();
+  clearSelection();
+  refreshSendState();
+  setStatus("Selection cleared.", "info");
+});
 els.file.addEventListener("change", (event) => { const files = [...event.target.files]; if (files.length === 1) setFileSelection(files[0]); else if (files.length) setBundleSelection(files.map((file) => ({ file, path: file.name }))); });
 els.folderBtn.addEventListener("click", () => els.folder.click());
 els.folder.addEventListener("change", (event) => setFolderSelection(event.target.files));
@@ -404,6 +412,7 @@ els.keyCopy.addEventListener("click", async () => {
   flashCopied(els.keyCopy);
   setStatus("File token copied to clipboard.", "ok");
 });
+els.downloadToken.addEventListener("keydown", (event) => { if (event.key === "Enter") els.loadToken.click(); });
 els.loadToken.addEventListener("click", async () => {
   const value = els.downloadToken.value.trim();
   const match = value.match(/^([a-f0-9]{16}|[a-f0-9]{64})\.([A-Za-z0-9_-]+)$/i);

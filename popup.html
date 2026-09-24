@@ -134,6 +134,17 @@
     .drop.pop { animation: pop 0.32s ease-out; }
     @keyframes pop { 40% { transform: scale(1.03); } }
     .drop .name { font-weight: 600; word-break: break-all; }
+    .drop { position: relative; }
+    .drop .clear {
+      position: absolute; top: 4px; right: 4px; display: none;
+      width: 20px; height: 20px; padding: 0; border: none; border-radius: 50%;
+      background: transparent; color: var(--muted); font-size: 12px; line-height: 20px; cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .drop.has-file .clear { display: block; }
+    .drop.has-file { padding: 13px 24px; }
+    .item button { font-variant-numeric: tabular-nums; }
+    .drop .clear:hover { background: var(--border); color: var(--text); }
     .drop .size { font-size: 12px; color: var(--muted); margin-top: 4px; }
     input[type="file"] { display: none; }
     /* Drop zone and folder button side by side, same height */
@@ -294,7 +305,7 @@
       <div>
         <label>File or folder</label>
         <div class="pick">
-          <div class="drop" id="drop"><div id="dropLabel">Click for a file, or drop a file / folder</div></div>
+          <div class="drop" id="drop"><div id="dropLabel">Click for a file, or drop a file / folder</div><button class="clear" id="clearPick" aria-label="Clear selection" data-tip="Clear the selection">✕</button></div>
           <button class="mini" id="folderBtn" data-tip="Choose a whole folder to send, keeping its structure">Or pick a folder…</button>
         </div>
         <input type="file" id="file" multiple />
