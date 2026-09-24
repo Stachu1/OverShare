@@ -194,6 +194,14 @@ function updateItemButtons() {
   }
   els.deleteStorage.disabled = deletingShas.size > 0;
 }
+function timeAgo(time) {
+  const minutes = Math.floor((Date.now() - time) / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}min ago`;
+  if (minutes < 24 * 60) return `${Math.floor(minutes / 60)}h ago`;
+  if (minutes < 30 * 24 * 60) return `${Math.floor(minutes / (24 * 60))}d ago`;
+  return new Date(time).toLocaleDateString();
+}
 function fileRow(file, position) {
   const item = document.createElement("div"); item.className = "item"; item.style.setProperty("--i", position);
   const meta = document.createElement("div"); meta.className = "meta";
@@ -202,6 +210,11 @@ function fileRow(file, position) {
   sub.textContent = file.available ? `${humanSize(file.originalSize)} · ${file.total} chunk(s) · ${file.kind}`
     : file.manifestFound ? `${humanSize(file.originalSize)} · missing ${file.missingChunks} chunk(s)`
     : file.orphanChunks ? `upload never finished · ${file.orphanChunks} chunk(s) left behind` : "missing from channel";
+  if (file.sentAt) {
+    const when = document.createElement("span"); when.className = "sent-at"; when.dataset.time = file.sentAt;
+    when.textContent = " · " + timeAgo(file.sentAt); when.title = new Date(file.sentAt).toLocaleString();
+    sub.append(when);
+  }
   meta.append(name, sub);
   const actions = document.createElement("div"); actions.className = "item-actions";
   const button = document.createElement("button"); button.textContent = "Download"; button.addEventListener("click", () => downloadFile(file));
@@ -427,6 +440,8 @@ els.send.addEventListener("click", async () => {
   } catch (error) { setStatus("Send failed: " + error.message, "err"); refreshSendState(); }
 });
 els.fileList.addEventListener("scroll", loadIfAtBottom);
+// Keeps the "5min ago" labels current while the popup stays open.
+setInterval(() => { for (const when of els.fileList.querySelectorAll(".sent-at")) when.textContent = " · " + timeAgo(Number(when.dataset.time)); }, 60000);
 els.tabSend.addEventListener("click", () => showTab(false)); els.tabDownload.addEventListener("click", () => showTab(true));
 const transferChannel = new BroadcastChannel("overshare");
 transferChannel.onmessage = (event) => {
