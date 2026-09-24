@@ -207,7 +207,7 @@ function fileRow(file, position) {
   const meta = document.createElement("div"); meta.className = "meta";
   const name = document.createElement("div"); name.className = "fname"; name.textContent = file.name + (showsSlash(file.kind) ? "/" : "");
   const sub = document.createElement("div"); sub.className = file.available ? "sub" : "sub incomplete";
-  sub.textContent = file.available ? `${humanSize(file.originalSize)} · ${file.total} chunk(s) · ${file.kind}`
+  sub.textContent = file.available ? `${humanSize(file.originalSize)} · ${file.total} chunk(s)`
     : file.manifestFound ? `${humanSize(file.originalSize)} · missing ${file.missingChunks} chunk(s)`
     : file.orphanChunks ? `upload never finished · ${file.orphanChunks} chunk(s) left behind` : "missing from channel";
   meta.append(name, sub);
