@@ -227,7 +227,7 @@
     /* In-popup confirmation: a dimmed overlay that blocks the page behind it */
     .dialog {
       position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center;
-      padding: 16px; background: rgba(0, 0, 0, 0.6); animation: dialog-in 0.16s ease-out;
+      padding: 16px; background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.88) 0%, rgba(0, 0, 0, 0.6) 70%); animation: dialog-in 0.16s ease-out;
     }
     .dialog[hidden] { display: none; }
     .dialog .box { display: flex; flex-direction: column; gap: 14px; max-width: 300px; text-align: center; }
