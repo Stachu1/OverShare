@@ -236,8 +236,10 @@
     .dialog button { min-width: 90px; padding: 8px 14px; border: none; border-radius: 8px; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.15s; }
     .dialog .ok { background: var(--accent); }
     .dialog .ok:hover { background: var(--accent-hover); }
-    .dialog .cancel { background: var(--err); }
-    .dialog .cancel:hover { background: #c93b3e; }
+    .dialog .ok.danger { background: var(--err); }
+    .dialog .ok.danger:hover { background: #c93b3e; }
+    .dialog .cancel { background: #4f5260; }
+    .dialog .cancel:hover { background: #5d6070; }
     @keyframes dialog-in { from { opacity: 0; } }
 
     /* Controls locked during a send */
