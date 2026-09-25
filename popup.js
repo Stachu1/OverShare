@@ -1,6 +1,6 @@
 "use strict";
 
-const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "botStatus", "botDot", "flyer", "tabs", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute", "tooltip", "clearPick",
+const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "update", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "botStatus", "botDot", "flyer", "tabs", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute", "tooltip", "clearPick",
   "settingsBtn", "settingsPanel", "configLabel", "configList", "configDrop", "newConfig", "importConfigFile", "configForm", "configFormTitle", "configName", "configToken", "configChannel", "cancelConfig", "saveConfig"];
 const els = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 let selection = null;
@@ -22,6 +22,33 @@ let currentTab = "send", lastMainTab = "send";
 let editingId = null; // the configuration the form is editing, or null for a new one
 
 els.version.textContent = "v" + chrome.runtime.getManifest().version;
+// An unpacked copy has no commit SHA of its own, but every commit bumps the manifest version,
+// so the version on GitHub's main branch tells whether a newer commit is out.
+const REMOTE_MANIFEST = "https://raw.githubusercontent.com/Stachu1/OverShare/main/manifest.json";
+const UPDATE_CHECK_MS = 60 * 60 * 1000;
+function newerVersion(remote, local) {
+  const a = remote.split(".").map(Number), b = local.split(".").map(Number);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0);
+  return false;
+}
+function showUpdate(remoteVersion) {
+  els.update.hidden = !remoteVersion || !newerVersion(remoteVersion, chrome.runtime.getManifest().version);
+  if (!els.update.hidden) els.update.dataset.tip = `v${remoteVersion} is on GitHub. Download the zip and load it in place of this one`;
+}
+async function checkForUpdate() {
+  const { remoteVersion } = await chrome.storage.local.get("remoteVersion").catch(() => ({}));
+  showUpdate(remoteVersion);
+  try {
+    const response = await fetch(REMOTE_MANIFEST, { cache: "no-store" });
+    if (!response.ok) return;
+    const { version } = await response.json();
+    if (typeof version !== "string") return;
+    showUpdate(version);
+    await chrome.storage.local.set({ remoteVersion: version });
+  } catch {} // offline or GitHub unreachable: keep the last known result
+}
+checkForUpdate();
+setInterval(checkForUpdate, UPDATE_CHECK_MS);
 // Restarts a one-shot CSS animation class, even if it is still running.
 function replayAnimation(element, className) { element.classList.remove(className); void element.offsetWidth; element.classList.add(className); }
 function setStatus(message, kind = "info") {
