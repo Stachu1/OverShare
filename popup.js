@@ -57,6 +57,16 @@ async function checkForUpdate() {
 }
 checkForUpdate();
 setInterval(checkForUpdate, UPDATE_CHECK_MS);
+// Loading the new copy in place of this one wipes its storage, so the configurations are saved first.
+// The zip is served as an attachment, so navigating the popup to it downloads it without leaving the page.
+els.update.addEventListener("click", async (event) => {
+  event.preventDefault();
+  if (configs.length) {
+    if (!confirm(`The new version may start with empty storage.\n\nDownload your ${configs.length} configuration file(s) now? Import them again after the update. The update downloads right after.`)) return;
+    for (const item of configs) await exportConfig(item);
+  }
+  location.href = els.update.href;
+});
 // Restarts a one-shot CSS animation class, even if it is still running.
 function replayAnimation(element, className) { element.classList.remove(className); void element.offsetWidth; element.classList.add(className); }
 function setStatus(message, kind = "info") {
