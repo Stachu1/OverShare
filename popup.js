@@ -423,7 +423,13 @@ function renderConfigs() {
   configs.forEach((item, position) => {
     const current = item.id === config.id;
     const row = document.createElement("div"); row.className = current ? "item config-item current" : "item config-item"; row.style.setProperty("--i", position);
-    if (!current) row.dataset.tip = "Use this configuration";
+    if (!current) row.dataset.tip = configs.length > 1 ? "Use this configuration, or drag it to reorder" : "Use this configuration";
+    row.dataset.id = item.id;
+    if (configs.length > 1) {
+      row.draggable = true;
+      row.addEventListener("dragstart", (event) => startConfigDrag(event, row));
+      row.addEventListener("dragend", endConfigDrag);
+    }
     const meta = document.createElement("div"); meta.className = "meta";
     const name = document.createElement("div"); name.className = "fname"; name.textContent = item.name;
     const sub = document.createElement("div"); sub.className = "sub";
@@ -446,6 +452,36 @@ function renderConfigs() {
   });
   els.configLabel.textContent = config.id ? config.name : "Discord bot";
 }
+// Configurations are reordered by dragging their rows; the order is the order of the
+// stored configs array, so it persists but is not part of any export.
+let draggedConfig = null;
+function startConfigDrag(event, row) {
+  hideTip();
+  draggedConfig = row;
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", row.dataset.id);
+  // Moving rows around would replay their entry animation.
+  for (const other of els.configList.children) other.classList.add("sorted");
+  requestAnimationFrame(() => row.classList.add("dragging"));
+}
+async function endConfigDrag() {
+  if (!draggedConfig) return;
+  draggedConfig.classList.remove("dragging");
+  draggedConfig = null;
+  const order = [...els.configList.querySelectorAll(".config-item")].map((row) => row.dataset.id);
+  if (order.every((id, position) => configs[position]?.id === id)) return;
+  configs = order.map((id) => configs.find((item) => item.id === id)).filter(Boolean);
+  await chrome.storage.local.set({ configs });
+}
+els.configList.addEventListener("dragover", (event) => {
+  if (!draggedConfig) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "move";
+  const rows = [...els.configList.querySelectorAll(".config-item:not(.dragging)")];
+  const next = rows.find((row) => { const box = row.getBoundingClientRect(); return event.clientY < box.top + box.height / 2; });
+  if (next !== draggedConfig.nextElementSibling) els.configList.insertBefore(draggedConfig, next || null);
+});
+els.configList.addEventListener("drop", (event) => { if (draggedConfig) event.preventDefault(); });
 // With sound, the bot check ends with a success or failure sound.
 async function selectConfig(id, { sound = false } = {}) {
   config = configs.find((item) => item.id === id) || NO_CONFIG;
@@ -916,7 +952,7 @@ els.importConfigFile.addEventListener("change", async (event) => {
   event.target.value = "";
   if (file) importConfig(file);
 });
-els.configDrop.addEventListener("dragover", (event) => { event.preventDefault(); els.configDrop.classList.add("drag"); });
+els.configDrop.addEventListener("dragover", (event) => { if (draggedConfig) return; event.preventDefault(); els.configDrop.classList.add("drag"); });
 els.configDrop.addEventListener("dragleave", () => els.configDrop.classList.remove("drag"));
 els.configDrop.addEventListener("drop", (event) => {
   event.preventDefault(); els.configDrop.classList.remove("drag");
