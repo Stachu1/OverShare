@@ -158,11 +158,15 @@ function launchFlyer(emoji, className) {
 }
 
 let audioContext = null;
+function audio() {
+  if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioContext.state === "suspended") audioContext.resume();
+  return audioContext;
+}
 function playTone(frequency, duration, delay = 0) {
   if (muted) return;
   try {
-    if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    if (audioContext.state === "suspended") audioContext.resume();
+    audio();
     const start = audioContext.currentTime + delay;
     const oscillator = audioContext.createOscillator();
     const gain = audioContext.createGain();
@@ -188,14 +192,37 @@ const SPIN_SECONDS = 0.9, SPIN_DEG = 1080, SPIN_TOOTH_DEG = 45, SPIN_EASING = [0
 const spinClickTimes = (() => {
   const [x1, y1, x2, y2] = SPIN_EASING;
   const bezier = (s, a, b) => 3 * a * s * (1 - s) ** 2 + 3 * b * s * s * (1 - s) + s ** 3;
-  const teeth = SPIN_DEG / SPIN_TOOTH_DEG, times = [];
+  const teeth = SPIN_DEG / SPIN_TOOTH_DEG, times = [0]; // the first click comes with the press
   for (let step = 1, next = 1; step <= 2000 && next <= teeth; step++) {
     const s = step / 2000;
     while (next <= teeth && bezier(s, y1, y2) * teeth >= next - 1e-9) { times.push(bezier(s, x1, x2) * SPIN_SECONDS); next++; }
   }
   return times;
 })();
-function playSpinClicks() { spinClickTimes.forEach((time, tooth) => playTone(tooth % 2 ? 1900 : 2300, 0.012, time)); }
+// A click is a few milliseconds of noise that dies away at once, through a band-pass
+// filter that sets its pitch: a tick, not a tone.
+let clickNoise = null;
+function playClicks(times, pitch) {
+  if (muted) return;
+  try {
+    const context = audio();
+    if (!clickNoise) {
+      const length = Math.round(context.sampleRate * 0.004);
+      clickNoise = context.createBuffer(1, length, context.sampleRate);
+      const samples = clickNoise.getChannelData(0);
+      for (let i = 0; i < length; i++) samples[i] = (Math.random() * 2 - 1) * Math.exp(-i / (length / 5));
+    }
+    const now = context.currentTime;
+    times.forEach((time, tooth) => {
+      const source = context.createBufferSource(); source.buffer = clickNoise;
+      const filter = context.createBiquadFilter(); filter.type = "bandpass"; filter.frequency.value = pitch(tooth); filter.Q.value = 2;
+      const gain = context.createGain(); gain.gain.value = 0.5;
+      source.connect(filter).connect(gain).connect(context.destination);
+      source.start(now + time);
+    });
+  } catch (_) {}
+}
+function playSpinClicks() { playClicks(spinClickTimes, (tooth) => tooth % 2 ? 3200 : 4000); }
 let hoveredButton = null;
 document.addEventListener("mouseover", (event) => { const button = event.target.closest("button"); if (button && button !== hoveredButton) { hoveredButton = button; playSound("hover"); } });
 document.addEventListener("mouseout", (event) => { if (!event.relatedTarget?.closest?.("button")) hoveredButton = null; });
@@ -623,13 +650,16 @@ els.fileList.addEventListener("scroll", loadIfAtBottom);
 // Keeps the "5min ago" labels current while the popup stays open.
 setInterval(() => { for (const when of els.fileList.querySelectorAll(".sent-at")) when.textContent = timeAgo(Number(when.dataset.time)); }, 60000);
 els.tabSend.addEventListener("click", () => showTab("send")); els.tabDownload.addEventListener("click", () => showTab("download"));
-els.settingsBtn.addEventListener("click", () => {
+// The gear turns on press, not on release; the click event is kept for the keyboard.
+function toggleSettings() {
   const opening = currentTab !== "settings";
   els.settingsBtn.classList.remove("spin-open", "spin-close");
   replayAnimation(els.settingsBtn, opening ? "spin-open" : "spin-close");
   playSpinClicks();
   showTab(opening ? "settings" : lastMainTab);
-});
+}
+els.settingsBtn.addEventListener("pointerdown", (event) => { if (event.button === 0) toggleSettings(); });
+els.settingsBtn.addEventListener("click", (event) => { if (event.detail === 0) toggleSettings(); });
 
 els.newConfig.addEventListener("click", () => openConfigForm(true));
 els.cancelConfig.addEventListener("click", () => openConfigForm(false));
