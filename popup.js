@@ -1,7 +1,7 @@
 "use strict";
 
 const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "update", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "botStatus", "botDot", "flyer", "tabs", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute", "tooltip", "clearPick",
-  "settingsBtn", "settingsPanel", "configLabel", "configList", "configDrop", "newConfig", "importConfigFile", "configForm", "configFormTitle", "configName", "configToken", "configChannel", "configOpen", "copyBotToken", "cancelConfig", "saveConfig",
+  "settingsBtn", "settingsPanel", "configLabel", "configList", "configDrop", "newConfig", "importConfigFile", "configForm", "configFormTitle", "configName", "configToken", "configChannel", "configOpen", "copyConfigName", "copyBotToken", "copyConfigChannel", "cancelConfig", "saveConfig",
   "dialog", "dialogMessage", "dialogOk", "dialogCancel"];
 const els = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 let selection = null;
@@ -489,7 +489,7 @@ function openConfigForm(open, item = null) {
     els.configToken.value = item?.token || ""; els.configChannel.value = item?.channelId || "";
     els.configOpen.checked = !!item?.open;
     updateOpenBox();
-    els.copyBotToken.hidden = !item;
+    for (const button of [els.copyConfigName, els.copyBotToken, els.copyConfigChannel]) button.hidden = !item;
     (item || configs.length ? els.configName : els.configToken).focus();
   }
   saveViewState();
@@ -793,13 +793,22 @@ els.cancelConfig.addEventListener("click", () => openConfigForm(false));
 for (const field of [els.configName, els.configToken, els.configChannel]) field.addEventListener("input", saveViewState);
 els.configChannel.addEventListener("input", updateOpenBox);
 els.configOpen.addEventListener("change", saveViewState);
-els.copyBotToken.addEventListener("click", async () => {
-  const token = els.configToken.value.trim();
-  if (!token) { setStatus("There is no bot token to copy.", "info"); return; }
-  if (!await askConfirm("The bot token gives full control of the bot: whoever has it can read, send and delete everything the bot can reach.\n\nShare it only with people you trust.", { ok: "Copy", danger: true })) return;
-  await navigator.clipboard.writeText(token);
-  replayAnimation(els.copyBotToken, "copied");
-  setStatus("Bot token copied. Keep it private.", "warn");
+// The copy buttons inside the edit form's fields; the bot token is copied only after a warning.
+function copyField(button, field, what, { warning = "", done = `${what[0].toUpperCase()}${what.slice(1)} copied.` } = {}) {
+  button.addEventListener("click", async () => {
+    const value = field.value.trim();
+    if (!value) { setStatus(`There is no ${what} to copy.`, "info"); return; }
+    if (warning && !await askConfirm(warning, { ok: "Copy", danger: true })) return;
+    await navigator.clipboard.writeText(value);
+    replayAnimation(button, "copied");
+    setStatus(done, warning ? "warn" : "ok");
+  });
+}
+copyField(els.copyConfigName, els.configName, "configuration name");
+copyField(els.copyConfigChannel, els.configChannel, "channel ID");
+copyField(els.copyBotToken, els.configToken, "bot token", {
+  warning: "The bot token gives full control of the bot: whoever has it can read, send and delete everything the bot can reach.\n\nShare it only with people you trust.",
+  done: "Bot token copied. Keep it private.",
 });
 // Finds the text channel called name in the bot's server, or creates it after
 // asking. The server is the one of another configuration with the same bot, and

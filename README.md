@@ -70,7 +70,7 @@ Instead of an ID you can type a name, such as `minecraft-world-saves` or `docume
 
 ### Open channels
 
-Tick **Open channel** when adding a configuration with a new channel name, and OverShare creates it as `open_<name>`. Only a new channel can be made open: an existing channel, given by its ID, keeps whatever its name says, so nobody's private channel is opened for them. Any channel whose name starts with `open_` is open: every file sent there is encrypted with one key built into OverShare instead of a key of its own. Everyone who has the bot token and OverShare sees every file in the channel and can download it without file tokens.
+Tick **Open** when adding a configuration with a new channel name, and OverShare creates it as `open_<name>`. Only a new channel can be made open: an existing channel, given by its ID, keeps whatever its name says, so nobody's private channel is opened for them. Any channel whose name starts with `open_` is open: every file sent there is encrypted with one key built into OverShare instead of a key of its own. Everyone who has the bot token and OverShare sees every file in the channel and can download it without file tokens.
 
 The shared key only keeps the files unreadable to someone who opens the channel in Discord without OverShare. Anyone with OverShare can decrypt them, so don't send anything private to an open channel.
 
