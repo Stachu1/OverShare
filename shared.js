@@ -87,7 +87,7 @@ class TransferMeter {
 function transferStats({ speed, eta }) { return speed ? `${humanSize(speed)}/s · ${formatDuration(eta)} left` : "measuring speed…"; }
 
 function discordError(status, data, statusText) {
-  return new Error(`Discord ${status}: ${data?.message || statusText}${data?.code ? ` (code ${data.code})` : ""}`);
+  return Object.assign(new Error(`Discord ${status}: ${data?.message || statusText}${data?.code ? ` (code ${data.code})` : ""}`), { status });
 }
 function parseJson(text) { try { return JSON.parse(text); } catch (_) { return null; } }
 
@@ -123,7 +123,7 @@ async function discordUpload(config, path, form, { signal, onProgress } = {}) {
       request.setRequestHeader("Authorization", `Bot ${config.token}`);
       request.upload.onprogress = (event) => onProgress?.(event.loaded);
       request.onload = () => resolve(request);
-      request.onerror = () => reject(new Error("Network error while uploading"));
+      request.onerror = () => reject(Object.assign(new Error("Network error while uploading"), { network: true }));
       request.onabort = () => reject(new DOMException("Upload canceled", "AbortError"));
       if (signal?.aborted) return reject(new DOMException("Upload canceled", "AbortError"));
       signal?.addEventListener("abort", () => request.abort(), { once: true });

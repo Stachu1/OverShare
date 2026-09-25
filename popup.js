@@ -100,6 +100,7 @@ function applyUploadState(state) {
     const chunkLabel = `${state.total ? "" : "~"}${chunks} chunk${chunks === 1 ? "" : "s"}`;
     if (state.cleaning) setStatus(`Removing sent chunks of ${state.name}…`, "info");
     else if (state.canceling) setStatus(`Canceling upload… ${percent}%`, "info");
+    else if (state.retrying) setStatus(`Chunk ${state.retrying.chunk} got no answer from Discord; resending (attempt ${state.retrying.attempt} of ${state.retrying.of}) · ${percent}%`, "info");
     else setStatus(`Sending ${chunkLabel} · ${percent}% · ${transferStats(state)}`, "info");
     refreshSendState();
   } else if (activeUpload || state.outcome === "interrupted") {

@@ -14,6 +14,12 @@ const UNZIP_SLICE_BYTES = 64 * 1024;
 // finished, so cleanup searches the channel a second time after this delay.
 const CLEANUP_RECHECK_MS = 3000;
 const PUBLISH_INTERVAL_MS = 250;
+// A gateway timeout (504), a similar 502/503, or a dropped connection doesn't say
+// whether Discord kept the message, so the channel is checked for it and it is
+// sent again only if it isn't there, up to this many attempts in all. The check
+// waits a little longer after each failure, since the message can show up late.
+const SEND_ATTEMPTS = 4;
+const SEND_RECHECK_MS = 3000;
 const channel = new BroadcastChannel(ENGINE_CHANNEL);
 
 let active = null;          // the upload, or the cleanup of one
@@ -46,7 +52,7 @@ function publish(send) { channel.postMessage({ type: "uploadState", send }); }
 function publishActive(extra = {}) {
 	lastPublish = performance.now();
 	const { speed, eta } = active.meter.update(active.bytesSent);
-	publish({ active: true, name: active.name, sent: active.sent, sending: active.sending, total: active.total, bytesSent: active.bytesSent, totalBytes: active.totalBytes, speed, eta, state: "sending", canceling: cancelRequested || active.cleaning, cleaning: active.cleaning, ...extra });
+	publish({ active: true, name: active.name, sent: active.sent, sending: active.sending, total: active.total, bytesSent: active.bytesSent, totalBytes: active.totalBytes, speed, eta, state: "sending", canceling: cancelRequested || active.cleaning, cleaning: active.cleaning, retrying: active.retrying || null, ...extra });
 }
 function throwIfCanceled() { if (cancelRequested) throw new DOMException("Upload canceled", "AbortError"); }
 
@@ -63,6 +69,26 @@ async function cleanUpUpload(record) {
 		return error;
 	}
 }
+function isUncertainFailure(error) {
+	return error.name !== "AbortError" && (error.network || error instanceof TypeError || [502, 503, 504].includes(error.status));
+}
+// Runs send(); after an uncertain failure, looks for the message among the newest
+// ones in the channel (isSent tells if one is it) and returns that, or sends again.
+async function sendChecked(config, what, send, isSent, onRetry) {
+	for (let attempt = 1; ; attempt++) {
+		try { return await send(); }
+		catch (error) {
+			if (cancelRequested || !isUncertainFailure(error)) throw error;
+			await sleep(SEND_RECHECK_MS * attempt);
+			throwIfCanceled();
+			const found = (await messagePage(config, null).catch(() => [])).find(isSent);
+			if (found) return found;
+			if (attempt >= SEND_ATTEMPTS) throw new Error(`${what} could not be sent after ${SEND_ATTEMPTS} attempts (${error.message})`);
+			onRetry?.(attempt + 1, error);
+		}
+	}
+}
+
 function cleanupFailureText(error) { return `removing the sent chunks failed (${error.message}). The partial file is in the Download list; delete it there.`; }
 
 // Collects zip output and hands it back in exact chunk-sized pieces.
@@ -142,13 +168,22 @@ async function uploadFiles(job) {
 		async function uploadPiece(form, number, from, to, bytes) {
 			active.sending = number;
 			publishActive();
-			const message = await discordUpload(config, path, form, {
-				signal: abortController.signal,
-				onProgress: (loaded) => {
-					active.bytesSent = from + (to - from) * Math.min(1, loaded / bytes);
-					if (performance.now() - lastPublish >= PUBLISH_INTERVAL_MS) publishActive();
-				},
-			});
+			const filename = `${sha}.${number}`;
+			const message = await sendChecked(config, `chunk ${number}`,
+				() => discordUpload(config, path, form, {
+					signal: abortController.signal,
+					onProgress: (loaded) => {
+						active.bytesSent = from + (to - from) * Math.min(1, loaded / bytes);
+						if (performance.now() - lastPublish >= PUBLISH_INTERVAL_MS) publishActive();
+					},
+				}),
+				(sent) => (sent.attachments || []).some((a) => a.filename === filename && (!a.size || a.size === bytes)),
+				(attempt) => {
+					active.retrying = { chunk: number, attempt, of: SEND_ATTEMPTS };
+					active.bytesSent = from;
+					publishActive();
+				});
+			active.retrying = null;
 			if (!firstId) firstId = message?.id;
 			if (!firstId) throw new Error("Discord did not return the chunk message");
 			active.sent = number;
@@ -187,7 +222,10 @@ async function uploadFiles(job) {
 		throwIfCanceled();
 		const manifest = { v: 3, sha, name, kind: metadata.kind, originalSize, encryptedSize, total: index, iv: base64urlEncode(prefix), firstId };
 		manifest.tag = await manifestTag(manifest, key);
-		await discordRequest(config, "POST", path, { json: { content: MANIFEST_MARKER + JSON.stringify(manifest) }, signal: abortController.signal });
+		const content = MANIFEST_MARKER + JSON.stringify(manifest);
+		await sendChecked(config, "the file manifest",
+			() => discordRequest(config, "POST", path, { json: { content }, signal: abortController.signal }),
+			(sent) => sent.content === content);
 		await storage("set", { [`${sha}.symmetricKey`]: job.symmetricKey, lastFileToken: `${sha}.${job.symmetricKey}` });
 		await storage("remove", ["activeUpload"]);
 		const seconds = (performance.now() - startedAt) / 1000;
