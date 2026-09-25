@@ -83,14 +83,15 @@ function formatDuration(seconds) {
   return `${Math.floor(s / 3600)}h ${String(Math.floor(s / 60) % 60).padStart(2, "0")}m`;
 }
 
-// Speed over the last few seconds, so it follows the current rate rather than
-// the average since the start.
+// Speed over the last 20% of the transfer's bytes: the average since the start
+// until then, and after that steady enough not to jump with each chunk while
+// still following the current rate.
 class TransferMeter {
-  constructor(totalBytes, windowMs = 5000) { this.total = totalBytes; this.windowMs = windowMs; this.samples = [{ t: performance.now(), bytes: 0 }]; }
+  constructor(totalBytes, windowShare = 0.2) { this.total = totalBytes; this.windowBytes = totalBytes * windowShare; this.samples = [{ t: performance.now(), bytes: 0 }]; }
   update(bytesDone) {
     const now = performance.now();
     this.samples.push({ t: now, bytes: bytesDone });
-    while (this.samples.length > 2 && now - this.samples[1].t > this.windowMs) this.samples.shift();
+    while (this.samples.length > 2 && bytesDone - this.samples[1].bytes >= this.windowBytes) this.samples.shift();
     const first = this.samples[0], elapsed = (now - first.t) / 1000;
     const speed = elapsed >= 0.5 ? (bytesDone - first.bytes) / elapsed : 0;
     return { speed, eta: speed > 0 ? (this.total - bytesDone) / speed : null };
