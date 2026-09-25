@@ -215,6 +215,26 @@ function showTab(name) {
   els.sendPanel.classList.toggle("active", name === "send"); els.downloadPanel.classList.toggle("active", name === "download");
   els.settingsPanel.classList.toggle("active", name === "settings"); els.settingsBtn.classList.toggle("active", name === "settings");
   if (name === "download") refreshFiles();
+  saveViewState();
+}
+// The popup closes whenever it loses focus, so the open tab and a half-filled new
+// configuration are kept in session storage (memory only, cleared when the browser
+// closes). Reopening the popup, say after copying the bot token, lands back there.
+function saveViewState() {
+  const form = els.configForm.hidden ? null : { name: els.configName.value, token: els.configToken.value, channelId: els.configChannel.value };
+  chrome.storage.session.set({ view: { tab: currentTab, lastMainTab, form } }).catch(() => {});
+}
+async function restoreViewState() {
+  const { view } = await chrome.storage.session.get("view").catch(() => ({}));
+  if (!configs.length) showTab("settings");
+  else if (view) { lastMainTab = view.lastMainTab || "send"; showTab(view.tab || "send"); }
+  // With nothing set up yet, Settings opens with the new configuration form.
+  if (!view?.form && configs.length) return;
+  openConfigForm(true);
+  if (view?.form) {
+    els.configName.value = view.form.name || ""; els.configToken.value = view.form.token || ""; els.configChannel.value = view.form.channelId || "";
+    saveViewState();
+  }
 }
 async function storedKeys() { return configTokens(await chrome.storage.local.get(null), config.id); }
 async function storedKey(sha) {
@@ -299,9 +319,11 @@ function busyWithConfig() { return !!activeUpload || !!activeDownload || deletin
 function openConfigForm(open) {
   els.configForm.hidden = !open;
   els.newConfig.disabled = open;
-  if (!open) return;
-  els.configName.value = configs.length ? "" : "Default"; els.configToken.value = ""; els.configChannel.value = "";
-  (configs.length ? els.configName : els.configToken).focus();
+  if (open) {
+    els.configName.value = configs.length ? "" : "Default"; els.configToken.value = ""; els.configChannel.value = "";
+    (configs.length ? els.configName : els.configToken).focus();
+  }
+  saveViewState();
 }
 function updateItemButtons() {
   for (const [sha, { file, downloadButton, deleteButton }] of itemControls) {
@@ -577,6 +599,7 @@ els.settingsBtn.addEventListener("click", () => showTab(currentTab === "settings
 
 els.newConfig.addEventListener("click", () => openConfigForm(true));
 els.cancelConfig.addEventListener("click", () => openConfigForm(false));
+for (const field of [els.configName, els.configToken, els.configChannel]) field.addEventListener("input", saveViewState);
 els.configForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const name = els.configName.value.trim(), token = els.configToken.value.trim(), channelId = els.configChannel.value.trim();
@@ -669,6 +692,5 @@ chrome.storage.onChanged.addListener((changes, area) => {
   refreshSendState();
   chrome.runtime.sendMessage({ target: "background", type: "ensureEngine" }).then(() => transferChannel.postMessage({ type: "hello" })).catch(() => {});
   checkBot();
-  // With nothing set up yet, start in Settings with the new configuration form open.
-  if (!configs.length) { showTab("settings"); openConfigForm(true); }
+  await restoreViewState();
 })();
