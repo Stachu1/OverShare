@@ -102,7 +102,7 @@ function transferStats({ speed, eta }) { return speed ? `${humanSize(speed)}/s Â
 // Discord's own messages can start with the status again ("401: Unauthorized"), which is dropped.
 function discordError(status, data, statusText) {
   const text = String(data?.message || statusText).replace(/^\d+:\s*/, "");
-  return Object.assign(new Error(`Discord ${status}: ${text}${data?.code ? ` (code ${data.code})` : ""}`), { status });
+  return Object.assign(new Error(`Discord ${status}: ${text}${data?.code ? ` (code ${data.code})` : ""}`), { status, code: data?.code });
 }
 function parseJson(text) { try { return JSON.parse(text); } catch (_) { return null; } }
 

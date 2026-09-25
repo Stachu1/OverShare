@@ -43,11 +43,14 @@ Go to the [Discord Developer Portal](https://discord.com/developers/applications
   - Send Messages
   - Attach Files
   - Read Message History
+  - Manage Channels (only needed to let OverShare create channels for you)
 - Add the bot only to your OverShare server.
 
 ### 3. Get the Channel ID
 
 Enable **Developer Mode** in Discord, then right-click your transfer channel and select **Copy Channel ID**.
+
+Instead of an ID you can type a name, such as `minecraft-world-saves` or `documents`. If no channel with that name exists, OverShare offers to create it and saves its ID in the configuration, which makes it quick to keep a separate configuration for each purpose. The channel is created in the server of another configuration with the same bot (in the same category, so it inherits its privacy), or in the bot's only server.
 
 ### 4. Install OverShare
 
@@ -55,7 +58,7 @@ Enable **Developer Mode** in Discord, then right-click your transfer channel and
 2. Enable **Developer mode**.
 3. Select **Load unpacked**.
 4. Choose the OverShare folder.
-5. Open the extension and enter your **bot token** and **channel ID**.
+5. Open the extension and enter your **bot token** and **channel ID** (or a name for a new channel).
 
 ## Usage
 

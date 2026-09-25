@@ -381,12 +381,12 @@
       </div>
       <form class="config-form" id="configForm" hidden autocomplete="off">
         <div class="form-title" id="configFormTitle">New configuration</div>
-        <div><label for="configName">Configuration name</label><input type="text" id="configName" placeholder="e.g. Friends" maxlength="40" /></div>
+        <div><label for="configName">Configuration name</label><input type="text" id="configName" placeholder="e.g. Minecraft world saves" maxlength="40" /></div>
         <div><label for="configToken">Discord bot token</label><input type="password" id="configToken" placeholder="Bot token" /></div>
-        <div><label for="configChannel">Discord channel ID</label><input type="text" id="configChannel" placeholder="Channel ID" inputmode="numeric" /></div>
+        <div><label for="configChannel">Discord channel ID, or a name for a new channel</label><input type="text" id="configChannel" placeholder="Channel ID or e.g. documents" /></div>
         <div class="row">
           <button type="button" class="mini" id="cancelConfig">Cancel</button>
-          <button type="submit" class="mini primary" id="saveConfig" data-tip="Check the bot and save the configuration">Save</button>
+          <button type="submit" class="mini primary" id="saveConfig" data-tip="Check the bot, create the channel if a name was given, and save the configuration">Save</button>
         </div>
       </form>
       <div class="list" id="configList"></div>

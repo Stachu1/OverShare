@@ -724,20 +724,64 @@ els.settingsBtn.addEventListener("click", (event) => { if (event.detail === 0) t
 els.newConfig.addEventListener("click", () => openConfigForm(true));
 els.cancelConfig.addEventListener("click", () => openConfigForm(false));
 for (const field of [els.configName, els.configToken, els.configChannel]) field.addEventListener("input", saveViewState);
+// Finds the text channel called name in the bot's server, or creates it after
+// asking. The server is the one of another configuration with the same bot, and
+// the new channel goes in that channel's category; otherwise the bot must be in
+// exactly one server. Resolves to the channel, or null when the user says no.
+async function findOrCreateChannel(token, name) {
+  const request = (method, path, json) => discordRequest({ token, channelId: name }, method, path, { json });
+  const fail = (message) => { throw Object.assign(new Error(message), { channelSetup: true }); };
+  // Discord lowercases text channel names and turns spaces into dashes.
+  const wanted = name.toLowerCase().replace(/\s+/g, "-");
+  let guildId = null, parentId = null;
+  for (const item of configs.filter((other) => other.token === token)) {
+    try { const sibling = await request("GET", `/channels/${item.channelId}`); guildId = sibling.guild_id; parentId = sibling.parent_id || null; break; } catch (_) {}
+  }
+  const guilds = await request("GET", "/users/@me/guilds");
+  const guild = guildId ? guilds.find((item) => item.id === guildId) : guilds.length === 1 ? guilds[0] : null;
+  if (!guild) fail(guilds.length ? `The bot is in ${guilds.length} servers, so it can't tell where to create #${wanted}. Enter a channel ID instead.` : "The bot is not in any server yet; invite it to yours first.");
+  const existing = (await request("GET", `/guilds/${guild.id}/channels`)).find((channel) => channel.type === 0 && channel.name === wanted);
+  if (existing) return existing;
+  if (!confirm(`No channel #${wanted} exists in ${guild.name}. Create it?`)) return null;
+  try {
+    return await request("POST", `/guilds/${guild.id}/channels`, { name, type: 0, ...(parentId ? { parent_id: parentId } : {}) });
+  } catch (error) {
+    if (error.status === 403) fail(`The bot may not create channels in ${guild.name}; give it the Manage Channels permission.`);
+    throw error;
+  }
+}
 els.configForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const name = els.configName.value.trim(), token = els.configToken.value.trim(), channelId = els.configChannel.value.trim();
-  if (!name || !token || !channelId) { setStatus("Fill in the name, bot token and channel ID.", "err"); return; }
-  if (!/^\d+$/.test(channelId)) { setStatus("The channel ID is a number; copy it from Discord.", "err"); return; }
+  const name = els.configName.value.trim(), token = els.configToken.value.trim(), channelInput = els.configChannel.value.trim();
+  let channelId = channelInput;
+  if (!name || !token || !channelInput) { setStatus("Fill in the name, bot token and channel ID or name.", "err"); return; }
   if (configs.some((item) => item.id !== editingId && item.name.toLowerCase() === name.toLowerCase())) { setStatus(`A configuration named ${name} already exists.`, "err"); return; }
   const edited = configs.find((item) => item.id === editingId);
   // A rename alone needs no new check with Discord.
-  if (!edited || edited.token !== token || edited.channelId !== channelId) {
+  if (!edited || edited.token !== token || edited.channelId !== channelInput) {
     els.saveConfig.disabled = true;
     setStatus("Checking bot…", "info");
+    // Anything that is not an existing channel's ID is taken as the name of a new channel.
+    let isName = !/^\d+$/.test(channelInput);
     try {
-      await discordRequest({ token, channelId }, "GET", `/channels/${channelId}`);
+      if (!isName) {
+        try {
+          await discordRequest({ token, channelId }, "GET", `/channels/${channelId}`);
+        } catch (error) {
+          // 10003 is Unknown Channel; 50035 is a number too long to be an ID.
+          if (error.code !== 10003 && error.code !== 50035) throw error;
+          isName = true;
+        }
+      }
+      if (isName) {
+        setStatus(`Setting up channel ${channelInput}…`, "info");
+        const created = await findOrCreateChannel(token, channelInput);
+        if (!created) { setStatus("No channel was created.", "info"); els.saveConfig.disabled = false; return; }
+        channelId = created.id;
+      }
     } catch (error) {
+      // Without a channel ID there is nothing to save.
+      if (isName) { setStatus(error.channelSetup ? error.message : "Setting up the channel failed: " + error.message, "err"); els.saveConfig.disabled = false; return; }
       // A wrong token (401) is saved without asking; its red "In use" label shows the problem.
       if (error.status !== 401 && !confirm(`Discord check failed: ${error.message}\n\nSave the configuration anyway?`)) { setStatus("Check failed: " + error.message, "err"); els.saveConfig.disabled = false; return; }
     }
