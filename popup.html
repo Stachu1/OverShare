@@ -233,13 +233,13 @@
     .dialog .box { display: flex; flex-direction: column; gap: 14px; max-width: 300px; text-align: center; }
     .dialog .message { font-size: 13px; line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere; }
     .dialog .buttons { display: flex; gap: 10px; justify-content: center; }
-    .dialog button { min-width: 90px; padding: 8px 14px; border: none; border-radius: 8px; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.15s; }
+    .dialog button { min-width: 90px; padding: 8px 14px; border: none; border-radius: 8px; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.15s, box-shadow 0.2s; }
     .dialog .ok { background: var(--accent); }
-    .dialog .ok:hover { background: var(--accent-hover); }
+    .dialog .ok:hover { background: var(--accent-hover); box-shadow: 0 0 14px rgba(88, 101, 242, 0.55); }
     .dialog .ok.danger { background: var(--err); }
-    .dialog .ok.danger:hover { background: #c93b3e; }
+    .dialog .ok.danger:hover { background: #c93b3e; box-shadow: 0 0 14px rgba(237, 66, 69, 0.55); }
     .dialog .cancel { background: #4f5260; }
-    .dialog .cancel:hover { background: #5d6070; }
+    .dialog .cancel:hover { background: #5d6070; box-shadow: 0 0 14px rgba(154, 156, 166, 0.45); }
     @keyframes dialog-in { from { opacity: 0; } }
 
     /* Controls locked during a send */
