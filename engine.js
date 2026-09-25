@@ -226,7 +226,8 @@ async function uploadFiles(job) {
 		await sendChecked(config, "the file manifest",
 			() => discordRequest(config, "POST", path, { json: { content }, signal: abortController.signal }),
 			(sent) => sent.content === content);
-		await storage("set", { [tokenKey(config.id, sha)]: job.symmetricKey, [lastTokenKey(config.id)]: `${sha}.${job.symmetricKey}` });
+		// An open channel lists every file without tokens, so only the latest send's token is kept.
+		await storage("set", { ...(config.open ? {} : { [tokenKey(config.id, sha)]: job.symmetricKey }), [lastTokenKey(config.id)]: `${sha}.${job.symmetricKey}` });
 		await storage("remove", ["activeUpload"]);
 		const seconds = (performance.now() - startedAt) / 1000;
 		publish({ active: false, outcome: "ok", name, total: index, size: originalSize, speed: seconds > 0 ? originalSize / seconds : 0 });

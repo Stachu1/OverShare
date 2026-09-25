@@ -16,6 +16,7 @@
       --accent-hover: #4752c4;
       --ok: #3ba55d;
       --err: #ed4245;
+      --warn: #f0a04b;
     }
     * { box-sizing: border-box; }
     html, body {
@@ -260,6 +261,7 @@
     .status.ok { color: var(--ok); }
     .status.err { color: var(--err); }
     .status.info { color: var(--muted); }
+    .status.warn { color: var(--warn); }
     .status.pop { animation: status-pop 0.35s ease-out; }
     @keyframes status-pop { 0% { opacity: 0; transform: translateY(4px) scale(0.97); } }
     .status-footer { flex: 0 0 auto; padding: 0 14px 12px; position: relative; }
@@ -332,6 +334,12 @@
     .token-actions .mini { width: 108px; padding: 7px 8px; }
     .token-actions .delete-tokens { color: #ff8a8a; border-color: #8e3e45; }
     .token-actions .delete-tokens:hover { color: #fff; border-color: var(--err); background: #4a252b; }
+    /* Open channels share one key with everyone, so token controls give way to a warning */
+    body.open-channel .token-only, body:not(.open-channel) .open-only { display: none; }
+    .open-warning { font-size: 12px; line-height: 1.5; color: var(--warn); padding: 8px 10px; border: 1px solid #7a5427; border-radius: 8px; background: rgba(240, 160, 75, 0.08); }
+    .open-tag { color: var(--warn); font-weight: 600; }
+    .check { display: flex; align-items: center; gap: 7px; margin: 0; cursor: pointer; }
+    .check input { margin: 0; accent-color: var(--accent); cursor: pointer; }
     .empty { text-align: center; color: var(--muted); font-size: 12px; padding: 24px 0; }
   </style>
 </head>
@@ -366,7 +374,8 @@
         <input type="file" id="file" multiple />
         <input type="file" id="folder" webkitdirectory />
       </div>
-      <div>
+      <div class="open-warning open-only"><b>Open channel.</b> Files sent here are encrypted with OverShare's shared key, not a key of their own: anyone who has this bot and OverShare can list and download them.</div>
+      <div class="token-only">
         <label>File token</label>
         <div class="row"><button class="mini copy-send-token" id="keyCopy" data-tip="Copy the token of the latest sent file, so someone else can download it">Copy Token</button></div>
         <div class="hint">Copies the file token of the latest sent file.</div>
@@ -377,14 +386,15 @@
 
     <section class="panel" id="downloadPanel">
       <!-- <div class="hint">OverShare searches Discord for transfers whose file tokens are stored in this extension.</div> -->
-      <div class="row token-actions">
+      <div class="open-warning open-only">Open channel: every file sent here is listed, no file tokens needed.</div>
+      <div class="row token-actions token-only">
         <button class="mini" id="exportStorage" data-tip="Save all stored file tokens to a JSON file">Export Tokens</button>
         <button class="mini" id="importStorage" data-tip="Add file tokens from an exported JSON file">Import Tokens</button>
         <button class="mini delete-tokens" id="deleteStorage" data-tip="Delete every stored token and its files from Discord">Delete Tokens</button>
         <input type="file" id="importFile" accept="application/json,.json" />
       </div>
-      <label for="downloadToken">File token</label>
-      <div class="row">
+      <label for="downloadToken" class="token-only">File token</label>
+      <div class="row token-only">
         <div><input type="password" id="downloadToken" placeholder="Paste a file token" /></div>
         <button class="mini" id="loadToken" data-tip="Store this token and look for its file in the channel">Load</button>
       </div>
@@ -402,6 +412,7 @@
         <div><label for="configName">Configuration name</label><input type="text" id="configName" placeholder="e.g. Minecraft world saves" maxlength="40" /></div>
         <div><label for="configToken">Discord bot token</label><input type="password" id="configToken" placeholder="Bot token" /></div>
         <div><label for="configChannel">Discord channel ID, or a name for a new channel</label><input type="text" id="configChannel" placeholder="Channel ID or e.g. documents" /></div>
+        <label class="check" data-tip="Adds open_ to the channel name. Files in an open channel use OverShare's shared key, so anyone with this bot and OverShare can see and download them without file tokens"><input type="checkbox" id="configOpen" /> Open: share its files with everyone who has this bot</label>
         <div class="row">
           <button type="button" class="mini" id="cancelConfig">Cancel</button>
           <button type="submit" class="mini primary" id="saveConfig" data-tip="Check the bot, create the channel if a name was given, and save the configuration">Save</button>
@@ -410,7 +421,7 @@
       <div class="list" id="configList"></div>
       <div class="drop config-drop" id="configDrop" data-tip="Import a configuration exported from OverShare">Click for a configuration file, or drop one here</div>
       <input type="file" id="importConfigFile" accept="application/json,.json" />
-      <div class="hint">Click a configuration to use it. Each one keeps its own file tokens. A configuration export holds the bot token, so keep it private.</div>
+      <div class="hint">Click a configuration to use it. Each one keeps its own file tokens. A channel whose name starts with open_ is open: its files use a key shared by everyone. A configuration export holds the bot token, so keep it private.</div>
     </section>
 
   </main>

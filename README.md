@@ -68,6 +68,12 @@ Instead of an ID you can type a name, such as `minecraft-world-saves` or `docume
 - **Export / Import Tokens:** Back up your file tokens as JSON.
 - **Delete:** Removes the transfer from Discord and removes its local token.
 
+### Open channels
+
+Tick **Open** when adding a configuration with a new channel name, and OverShare puts `open_` in front of it. Any channel whose name starts with `open_` is open: every file sent there is encrypted with one key built into OverShare instead of a key of its own. Everyone who has the bot token and OverShare sees every file in the channel and can download it without file tokens.
+
+The shared key only keeps the files unreadable to someone who opens the channel in Discord without OverShare. Anyone with OverShare can decrypt them, so don't send anything private to an open channel.
+
 ### Sending from the command line
 
 `upload.py` sends a file the same way the extension does, without a browser:

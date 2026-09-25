@@ -57,6 +57,19 @@ function configTokens(data, configId) {
     .filter(([name, value]) => configId && name.startsWith(prefix) && name.endsWith(suffix) && typeof value === "string")
     .map(([name, value]) => `${name.slice(prefix.length, -suffix.length)}.${value}`);
 }
+// Open channels (named "open_…") are for sharing with everyone who has the bot:
+// every file in them is encrypted with this one key, the same in every copy of
+// OverShare, so no file tokens need to be passed around. It keeps the files away
+// from anyone who reads the channel without OverShare, and no more.
+const OPEN_PREFIX = "open_";
+const OPEN_MASTER_KEY = "LlSzLppn9IsvmOWEB7yTjeZYvVqoAYD-IL-KyZ_lm6s";
+function isOpenChannelName(name) { return String(name || "").startsWith(OPEN_PREFIX); }
+let openKey = null;
+async function opensWithOpenKey(manifest) {
+  if (!manifest.tag) return false;
+  openKey ??= importChunkKey(OPEN_MASTER_KEY, "decrypt");
+  try { await verifyManifest(manifest, await openKey); return true; } catch (_) { return false; }
+}
 function importChunkKey(encodedKey, usage) { return crypto.subtle.importKey("raw", base64urlDecode(encodedKey), "AES-GCM", false, [usage]); }
 // Popup <-> engine messages. A BroadcastChannel (unlike chrome.runtime
 // messaging) can carry Blobs and directory handles.
@@ -178,24 +191,26 @@ function shasFromKeys(keys) {
 }
 
 // Walks the channel newest-first, a page of messages at a time, and hands out the
-// transfers whose file tokens are stored, newest first. Chunks are always older
-// than their manifest, and the manifest names the message of chunk 1, so a
-// transfer is handed out as soon as all its chunks are found or the walk has gone
-// past chunk 1. Only as much history is read as the files asked for need.
-// Transfers without a manifest (unfinished or deleted) can only be known once the
-// whole history is read, so they come last.
+// transfers whose file tokens are stored (with keys null, every transfer the open
+// key opens), newest first. Chunks are always older than their manifest, and the
+// manifest names the message of chunk 1, so a transfer is handed out as soon as
+// all its chunks are found or the walk has gone past chunk 1. Only as much history
+// is read as the files asked for need. Transfers without a manifest (unfinished or
+// deleted) can only be known once the whole history is read, so they come last.
 class TransferScanner {
   constructor(config, keys) {
     this.config = config;
-    this.wanted = shasFromKeys(keys);
+    this.wanted = keys ? shasFromKeys(keys) : null; // null takes every transfer
     this.queue = []; // { manifest, sentAt } with a manifest found, newest first, not handed out yet
     this.parts = {}; // sha -> { chunk number: { url, size } }
     this.seen = new Set(); // shas whose manifest was found
+    this.foreign = new Set(); // with every transfer taken: shas whose manifest the open key doesn't open
     this.before = null;
     this.pages = 0;
-    this.ended = !this.wanted.size; // no more history to read, or none needed
+    this.ended = !!this.wanted && !this.wanted.size; // no more history to read, or none needed
     this.leftoversGiven = false;
   }
+  wants(sha) { return !this.wanted || this.wanted.has(sha); }
   get done() { return this.ended && !this.queue.length && this.leftoversGiven; }
   async readPage() {
     const batch = await messagePage(this.config, this.before);
@@ -204,14 +219,16 @@ class TransferScanner {
       if (content.startsWith(MANIFEST_MARKER)) {
         let manifest = null;
         try { manifest = JSON.parse(content.split("\n", 1)[0].slice(MANIFEST_MARKER.length)); } catch (_) {}
-        if (manifest?.v === 3 && this.wanted.has(manifest.sha) && !this.seen.has(manifest.sha)) {
+        if (manifest?.v === 3 && typeof manifest.sha === "string" && this.wants(manifest.sha) && !this.seen.has(manifest.sha) && !this.foreign.has(manifest.sha)) {
+          // A file sent to an open channel with a key of its own can't be opened here, so it isn't listed.
+          if (!this.wanted && !await opensWithOpenKey(manifest)) { this.foreign.add(manifest.sha); continue; }
           this.seen.add(manifest.sha);
           this.queue.push({ manifest, sentAt: Date.parse(message.timestamp) || 0 });
         }
       }
       for (const attachment of message.attachments || []) {
         const match = (attachment.filename || "").match(/^([^.]+)\.(\d+)$/);
-        if (match && this.wanted.has(match[1])) (this.parts[match[1]] ??= {})[Number(match[2])] = { url: attachment.url, size: attachment.size || 0 };
+        if (match && this.wants(match[1]) && !this.foreign.has(match[1])) (this.parts[match[1]] ??= {})[Number(match[2])] = { url: attachment.url, size: attachment.size || 0 };
       }
     }
     this.pages++;
@@ -239,12 +256,12 @@ class TransferScanner {
       while (files.length < count && this.queue.length && this.ready(this.queue[0])) files.push(this.describe(this.queue.shift()));
       if (files.length >= count || this.ended) break;
       // Once every wanted manifest is found and handed out, older history can't add a file.
-      if (!this.queue.length && this.seen.size === this.wanted.size) { this.ended = true; break; }
+      if (this.wanted && !this.queue.length && this.seen.size === this.wanted.size) { this.ended = true; break; }
       await this.readPage();
     }
     if (this.ended && !this.queue.length && !this.leftoversGiven && files.length < count) {
       this.leftoversGiven = true;
-      for (const sha of this.wanted) {
+      for (const sha of this.wanted || Object.keys(this.parts)) {
         if (this.seen.has(sha)) continue;
         // The manifest is posted last, so chunks without one are a send that never finished.
         const orphanChunks = Object.keys(this.parts[sha] || {}).length;

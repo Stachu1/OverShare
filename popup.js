@@ -1,7 +1,7 @@
 "use strict";
 
 const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "update", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "botStatus", "botDot", "flyer", "tabs", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute", "tooltip", "clearPick",
-  "settingsBtn", "settingsPanel", "configLabel", "configList", "configDrop", "newConfig", "importConfigFile", "configForm", "configFormTitle", "configName", "configToken", "configChannel", "cancelConfig", "saveConfig",
+  "settingsBtn", "settingsPanel", "configLabel", "configList", "configDrop", "newConfig", "importConfigFile", "configForm", "configFormTitle", "configName", "configToken", "configChannel", "configOpen", "cancelConfig", "saveConfig",
   "dialog", "dialogMessage", "dialogOk", "dialogCancel"];
 const els = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 let selection = null;
@@ -14,8 +14,9 @@ let deletingShas = new Set();
 const LIST_PAGE = 4; // files added to the Download list per load
 let scanner = null, listRun = 0, listLoading = false, listFooter = null, shownFiles = 0, incompleteFiles = 0;
 const itemControls = new Map(); // sha -> the rendered list row and its buttons
-// A configuration is one bot and channel: { id, name, token, channelId }.
-const NO_CONFIG = { id: "", name: "", token: "", channelId: "" };
+// A configuration is one bot and channel: { id, name, token, channelId, open }.
+// open is true for an open channel (see OPEN_MASTER_KEY in shared.js).
+const NO_CONFIG = { id: "", name: "", token: "", channelId: "", open: false };
 let configs = [];
 let config = NO_CONFIG;
 let botCheckRun = 0;
@@ -135,7 +136,8 @@ function prepareSelection() {
   };
   els.drop.classList.add("has-file");
   els.dropLabel.innerHTML = `<div class="name">${escapeHtml(selection.name)}${showsSlash(selection.kind) ? "/" : ""}</div><div class="size">${humanSize(payload.originalSize)} · ${payload.entries} file(s)</div>`;
-  setStatus("Ready to send.", "ok");
+  if (config.open) setStatus("Ready to send to an open channel: anyone with this bot can download it.", "warn");
+  else setStatus("Ready to send.", "ok");
   replayAnimation(els.drop, "pop");
   requestAnimationFrame(() => replayAnimation(els.send, "ready"));
   refreshSendState();
@@ -155,9 +157,16 @@ function refreshSendState() {
     return;
   }
   els.send.classList.remove("cancel");
-  els.send.textContent = "Send";
+  els.send.textContent = config.open ? "Send to Open Channel" : "Send";
   els.send.disabled = !payload;
-  els.send.dataset.tip = payload ? "Compress, encrypt and upload the selection to Discord" : "Pick a file or folder first";
+  els.send.dataset.tip = !payload ? "Pick a file or folder first"
+    : config.open ? "Compress, encrypt with OverShare's shared key and upload; anyone with this bot and OverShare can download it"
+    : "Compress, encrypt and upload the selection to Discord";
+}
+// Open channels swap the token controls for a warning (the open-only and token-only classes in popup.html).
+function applyOpenMode() {
+  document.body.classList.toggle("open-channel", !!config.open);
+  refreshSendState();
 }
 function resetUploadProgress() {
   els.progress.classList.remove("show");
@@ -187,7 +196,7 @@ function applyUploadState(state) {
     resetUploadProgress();
     refreshSendState();
     if (state.idle) return;
-    if (state.outcome === "ok") { if (old.symmetricKey && old.configId === config.id) lastSentToken = `${old.sha}.${old.symmetricKey}`; playSound("send"); setStatus(`Sent ${state.name || old.name}: ${humanSize(state.size || 0)} (${humanSize(state.speed || 0)}/s)`, "ok"); launchFlyer("🚀", "fly"); }
+    if (state.outcome === "ok") { if (old.symmetricKey && old.configId === config.id) lastSentToken = `${old.sha}.${old.symmetricKey}`; playSound("send"); setStatus(`Sent ${state.name || old.name}${old.open ? " to the open channel" : ""}: ${humanSize(state.size || 0)} (${humanSize(state.speed || 0)}/s)`, "ok"); launchFlyer("🚀", "fly"); }
     else setStatus(state.text || "Upload failed", state.failed ? "err" : "info");
   }
 }
@@ -327,6 +336,17 @@ async function checkBot() {
     const bot = await discordRequest(config, "GET", "/users/@me");
     const target = await discordRequest(config, "GET", `/channels/${config.channelId}`);
     if (run !== botCheckRun) return null;
+    // The channel's name decides whether it is open, so a renamed channel is followed.
+    const open = isOpenChannelName(target.name);
+    if (!!config.open !== open) {
+      config = { ...config, open };
+      configs = configs.map((item) => item.id === config.id ? config : item);
+      await chrome.storage.local.set({ configs });
+      if (run !== botCheckRun) return null;
+      applyOpenMode();
+      renderConfigs();
+      if (currentTab === "download") refreshFiles();
+    }
     setBotStatus(`Connected as ${bot.username} · ${target.name ? "#" + target.name : "DM"}`, "ok");
     return true;
   } catch (error) {
@@ -355,7 +375,7 @@ function showTab(name) {
 // configuration are kept in session storage (memory only, cleared when the browser
 // closes). Reopening the popup, say after copying the bot token, lands back there.
 function saveViewState() {
-  const form = els.configForm.hidden ? null : { editingId, name: els.configName.value, token: els.configToken.value, channelId: els.configChannel.value };
+  const form = els.configForm.hidden ? null : { editingId, name: els.configName.value, token: els.configToken.value, channelId: els.configChannel.value, open: els.configOpen.checked };
   chrome.storage.session.set({ view: { tab: currentTab, lastMainTab, form } }).catch(() => {});
 }
 async function restoreViewState() {
@@ -367,11 +387,13 @@ async function restoreViewState() {
   openConfigForm(true, configs.find((item) => item.id === view?.form?.editingId));
   if (view?.form) {
     els.configName.value = view.form.name || ""; els.configToken.value = view.form.token || ""; els.configChannel.value = view.form.channelId || "";
+    els.configOpen.checked = !!view.form.open;
     saveViewState();
   }
 }
 async function storedKeys() { return configTokens(await chrome.storage.local.get(null), config.id); }
 async function storedKey(sha) {
+  if (config.open) return OPEN_MASTER_KEY;
   const name = tokenKey(config.id, sha);
   return (await chrome.storage.local.get(name))[name];
 }
@@ -404,7 +426,7 @@ function renderConfigs() {
     const meta = document.createElement("div"); meta.className = "meta";
     const name = document.createElement("div"); name.className = "fname"; name.textContent = item.name;
     const sub = document.createElement("div"); sub.className = "sub";
-    sub.innerHTML = `${current ? `<span class="in-use ${botState}" title="${escapeHtml(els.botStatus.textContent)}">In use</span> · ` : ""}Channel ${escapeHtml(item.channelId)}`;
+    sub.innerHTML = `${current ? `<span class="in-use ${botState}" title="${escapeHtml(els.botStatus.textContent)}">In use</span> · ` : ""}Channel ${escapeHtml(item.channelId)}${item.open ? ' · <span class="open-tag">Open</span>' : ""}`;
     meta.append(name, sub);
     const actions = document.createElement("div"); actions.className = "secondary-actions";
     const editButton = document.createElement("button"); editButton.className = "copy-token"; editButton.textContent = "Edit";
@@ -431,6 +453,7 @@ async function selectConfig(id, { sound = false } = {}) {
   lastSentToken = data[lastTokenKey(config.id)] || "";
   els.downloadToken.value = "";
   renderConfigs();
+  applyOpenMode();
   // The file list belongs to the old configuration; it is rebuilt when the Download tab opens.
   listRun++; scanner = null; itemControls.clear();
   if (currentTab === "download") refreshFiles();
@@ -463,6 +486,7 @@ function openConfigForm(open, item = null) {
     els.configFormTitle.textContent = item ? `Edit ${item.name}` : "New configuration";
     els.configName.value = item ? item.name : configs.length ? "" : "Default";
     els.configToken.value = item?.token || ""; els.configChannel.value = item?.channelId || "";
+    els.configOpen.checked = !!item?.open;
     (item || configs.length ? els.configName : els.configToken).focus();
   }
   saveViewState();
@@ -506,7 +530,9 @@ function fileRow(file, position) {
   const deleteButton = document.createElement("button"); deleteButton.className = "delete-file"; deleteButton.textContent = "Delete"; deleteButton.dataset.tip = "Delete this file from Discord and local storage";
   deleteButton.addEventListener("click", () => deleteFileToken(file));
   const secondaryActions = document.createElement("div"); secondaryActions.className = "secondary-actions";
-  secondaryActions.append(copyButton, deleteButton);
+  // Everyone with the bot sees an open channel's files, so there is no token to share.
+  if (config.open) secondaryActions.append(deleteButton);
+  else secondaryActions.append(copyButton, deleteButton);
   actions.append(button, secondaryActions); item.append(meta, actions);
   itemControls.set(file.sha, { file, item, downloadButton: button, deleteButton });
   return item;
@@ -522,7 +548,9 @@ async function copyFileToken(file, button) {
 }
 async function deleteFileToken(file) {
   if (!await storedKey(file.sha)) { setStatus("Delete failed: token is not stored locally.", "err"); return; }
-  if (!await askConfirm(`Delete "${file.name}" from Discord and local storage? This cannot be undone.`, { ok: "Delete", danger: true })) return;
+  const question = config.open ? `Delete "${file.name}" from the open channel? It goes for everyone who shares it. This cannot be undone.`
+    : `Delete "${file.name}" from Discord and local storage? This cannot be undone.`;
+  if (!await askConfirm(question, { ok: "Delete", danger: true })) return;
   try { requireConfig(); } catch (error) { setStatus("Delete failed: " + error.message, "err"); return; }
   startDelete([file.sha], file.name);
 }
@@ -558,7 +586,7 @@ async function refreshFiles() {
   els.fileList.appendChild(listFooter);
   const keys = await storedKeys();
   if (run !== listRun) return;
-  scanner = new TransferScanner(config, keys);
+  scanner = new TransferScanner(config, config.open ? null : keys);
   loadMoreFiles();
 }
 async function loadMoreFiles() {
@@ -724,10 +752,11 @@ els.send.addEventListener("click", async () => {
   if (!config.id) { setStatus("Add a configuration in Settings first.", "err"); return; }
   els.send.disabled = true; els.send.textContent = "Starting…"; els.progress.classList.add("show"); els.bar.style.width = "0%";
   const metadata = { sha: payload.sha, name: payload.name, kind: payload.kind, originalSize: payload.originalSize };
+  const symmetricKey = config.open ? OPEN_MASTER_KEY : payload.symmetricKey;
   try {
     // File objects cross to the engine by reference; their contents are read there, piece by piece.
-    transferChannel.postMessage({ type: "startUpload", job: { metadata, config, symmetricKey: payload.symmetricKey, files: payload.files } });
-    activeUpload = { name: payload.name, sha: payload.sha, symmetricKey: payload.symmetricKey, configId: config.id, total: null, sent: 0 };
+    transferChannel.postMessage({ type: "startUpload", job: { metadata, config, symmetricKey, files: payload.files } });
+    activeUpload = { name: payload.name, sha: payload.sha, symmetricKey, configId: config.id, open: !!config.open, total: null, sent: 0 };
     // Each send gets a fresh ID and key, so the selection is used up.
     clearSelection();
     refreshSendState();
@@ -751,6 +780,7 @@ els.settingsBtn.addEventListener("click", (event) => { if (event.detail === 0) t
 els.newConfig.addEventListener("click", () => openConfigForm(true));
 els.cancelConfig.addEventListener("click", () => openConfigForm(false));
 for (const field of [els.configName, els.configToken, els.configChannel]) field.addEventListener("input", saveViewState);
+els.configOpen.addEventListener("change", saveViewState);
 // Finds the text channel called name in the bot's server, or creates it after
 // asking. The server is the one of another configuration with the same bot, and
 // the new channel goes in that channel's category; otherwise the bot must be in
@@ -780,12 +810,13 @@ async function findOrCreateChannel(token, name) {
 els.configForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const name = els.configName.value.trim(), token = els.configToken.value.trim(), channelInput = els.configChannel.value.trim();
-  let channelId = channelInput;
+  const wantOpen = els.configOpen.checked;
   if (!name || !token || !channelInput) { setStatus("Fill in the name, bot token and channel ID or name.", "err"); return; }
   if (configs.some((item) => item.id !== editingId && item.name.toLowerCase() === name.toLowerCase())) { setStatus(`A configuration named ${name} already exists.`, "err"); return; }
   const edited = configs.find((item) => item.id === editingId);
+  let channelId = channelInput, open = !!edited?.open;
   // A rename alone needs no new check with Discord.
-  if (!edited || edited.token !== token || edited.channelId !== channelInput) {
+  if (!edited || edited.token !== token || edited.channelId !== channelInput || open !== wantOpen) {
     els.saveConfig.disabled = true;
     setStatus("Checking bot…", "info");
     // Anything that is not an existing channel's ID is taken as the name of a new channel.
@@ -793,7 +824,7 @@ els.configForm.addEventListener("submit", async (event) => {
     try {
       if (!isName) {
         try {
-          await discordRequest({ token, channelId }, "GET", `/channels/${channelId}`);
+          open = isOpenChannelName((await discordRequest({ token, channelId }, "GET", `/channels/${channelId}`)).name);
         } catch (error) {
           // 10003 is Unknown Channel; 50035 is a number too long to be an ID.
           if (error.code !== 10003 && error.code !== 50035) throw error;
@@ -801,33 +832,41 @@ els.configForm.addEventListener("submit", async (event) => {
         }
       }
       if (isName) {
-        setStatus(`Setting up channel ${channelInput}…`, "info");
-        const created = await findOrCreateChannel(token, channelInput);
+        // Open adds the prefix to a new channel's name; a name that has it already is open anyway.
+        const channelName = wantOpen && !isOpenChannelName(channelInput) ? OPEN_PREFIX + channelInput : channelInput;
+        setStatus(`Setting up channel ${channelName}…`, "info");
+        const created = await findOrCreateChannel(token, channelName);
         if (!created) { setStatus("No channel was created.", "info"); els.saveConfig.disabled = false; return; }
         channelId = created.id;
+        open = isOpenChannelName(created.name);
+      } else if (wantOpen && !open) {
+        setStatus(`That channel's name doesn't start with ${OPEN_PREFIX}, so it isn't open. Rename it in Discord, or enter a name for a new open channel.`, "err");
+        els.saveConfig.disabled = false; return;
       }
     } catch (error) {
       // Without a channel ID there is nothing to save.
       if (isName) { setStatus(error.channelSetup ? error.message : "Setting up the channel failed: " + error.message, "err"); els.saveConfig.disabled = false; return; }
       // A wrong token (401) is saved without asking; its red "In use" label shows the problem.
+      // The channel couldn't be read, so the checkbox is trusted until the bot check can read its name.
+      open = wantOpen;
       if (error.status !== 401 && !await askConfirm(`Discord check failed: ${error.message}\n\nSave the configuration anyway?`, { ok: "Save anyway" })) { setStatus("Check failed: " + error.message, "err"); els.saveConfig.disabled = false; return; }
     }
     els.saveConfig.disabled = false;
   }
   const id = edited?.id || newConfigId();
-  configs = edited ? configs.map((item) => item.id === id ? { id, name, token, channelId } : item) : [...configs, { id, name, token, channelId }];
+  configs = edited ? configs.map((item) => item.id === id ? { id, name, token, channelId, open } : item) : [...configs, { id, name, token, channelId, open }];
   await chrome.storage.local.set({ configs });
   openConfigForm(false);
   // Editing another configuration leaves the one in use selected.
   if (!edited || id === config.id) await selectConfig(id);
   else renderConfigs();
-  setStatus(edited ? `Configuration ${name} saved.` : `Configuration ${name} added.`, "ok");
+  setStatus(`Configuration ${name} ${edited ? "saved" : "added"}${open ? " with an open channel: anyone with this bot can see its files" : ""}.`, "ok");
 });
 // A configuration export holds everything needed to use it elsewhere, bot token included.
 async function exportConfig(item) {
   const tokens = configTokens(await chrome.storage.local.get(null), item.id);
   const safeName = item.name.replace(/[^\w-]+/g, "_");
-  downloadJson(`overshare-config-${safeName}.json`, { overshareConfig: 1, name: item.name, botToken: item.token, channelId: item.channelId, files: tokenFileEntries(tokens) });
+  downloadJson(`overshare-config-${safeName}.json`, { overshareConfig: 1, name: item.name, botToken: item.token, channelId: item.channelId, open: !!item.open, files: tokenFileEntries(tokens) });
   setStatus(`${item.name} exported with ${tokens.length} file token(s). The file holds the bot token: keep it private.`, "ok");
 }
 async function importConfig(file) {
@@ -838,7 +877,7 @@ async function importConfig(file) {
     // The same bot and channel already here just gets the file tokens added.
     const existing = configs.find((item) => item.token === data.botToken && item.channelId === String(data.channelId));
     const id = existing?.id || newConfigId();
-    if (!existing) configs = [...configs, { id, name: uniqueConfigName(String(data.name || "").trim().slice(0, 40) || "Imported"), token: data.botToken, channelId: String(data.channelId) }];
+    if (!existing) configs = [...configs, { id, name: uniqueConfigName(String(data.name || "").trim().slice(0, 40) || "Imported"), token: data.botToken, channelId: String(data.channelId), open: data.open === true }];
     await chrome.storage.local.set({ configs, ...tokenItems(id, pairs) });
     await selectConfig(id);
     setStatus(existing ? `Added ${pairs.length} file token(s) to ${config.name}, which has the same bot and channel.` : `Configuration ${config.name} imported with ${pairs.length} file token(s).`, "ok");
@@ -889,6 +928,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   config = configs.find((item) => item.id === data.activeConfigId) || configs[0] || NO_CONFIG;
   lastSentToken = data[lastTokenKey(config.id)] || "";
   renderConfigs();
+  applyOpenMode();
   muted = !!data.muted; els.mute.textContent = muted ? "🔇" : "🔊";
   // Restore the stored upload before asking the engine, so its reply can confirm or clear it.
   if (data.activeUpload) activeUpload = { ...data.activeUpload, configId: data.activeUpload.config?.id, restored: true };
