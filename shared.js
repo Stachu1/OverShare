@@ -45,6 +45,18 @@ async function verifyManifest(manifest, key) {
     throw error;
   }
 }
+// Each configuration (a bot token and channel) keeps its own file tokens, stored
+// as "<config id>:<transfer id>.symmetricKey", and the token of its latest send
+// as "<config id>:lastFileToken".
+function tokenKey(configId, sha) { return `${configId}:${sha}.symmetricKey`; }
+function lastTokenKey(configId) { return `${configId}:lastFileToken`; }
+// The file tokens ("<id>.<key>") stored for one configuration.
+function configTokens(data, configId) {
+  const prefix = `${configId}:`, suffix = ".symmetricKey";
+  return Object.entries(data)
+    .filter(([name, value]) => configId && name.startsWith(prefix) && name.endsWith(suffix) && typeof value === "string")
+    .map(([name, value]) => `${name.slice(prefix.length, -suffix.length)}.${value}`);
+}
 function importChunkKey(encodedKey, usage) { return crypto.subtle.importKey("raw", base64urlDecode(encodedKey), "AES-GCM", false, [usage]); }
 // Popup <-> engine messages. A BroadcastChannel (unlike chrome.runtime
 // messaging) can carry Blobs and directory handles.

@@ -61,6 +61,7 @@
       font-size: 15px; line-height: 1; opacity: 0.85;
     }
     .iconbtn:hover { opacity: 1; }
+    .iconbtn.active { opacity: 1; filter: drop-shadow(0 0 4px var(--accent)); }
 
     main { flex: 1; min-height: 0; overflow: hidden; padding: 14px; display: flex; flex-direction: column; gap: 9px; }
 
@@ -70,7 +71,6 @@
     }
     .row { display: flex; gap: 8px; align-items: flex-end; }
     .row > div { flex: 1; min-width: 0; }
-    .row > div.channel-field { flex: 0 0 140px; }
 
     input[type="text"], input[type="password"], input[type="number"], textarea {
       width: 100%; padding: 9px 12px;
@@ -118,6 +118,21 @@
       transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
     }
     .tabs.download .indicator { transform: translateX(calc(100% + 12px)); }
+    .tabs .indicator { transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.2s; }
+    .tabs.settings .indicator { opacity: 0; }
+
+    /* Settings */
+    .settingsPanel { flex: 1; overflow-y: auto; }
+    select.config-select {
+      width: 100%; padding: 9px 10px; background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text); font-size: 13px; cursor: pointer; outline: none;
+    }
+    select.config-select:hover, select.config-select:focus { border-color: var(--accent); }
+    .config-form { display: flex; flex-direction: column; gap: 9px; padding: 11px; border: 1px solid var(--border); border-radius: 8px; animation: panel-in 0.24s ease-out; }
+    .config-form[hidden] { display: none; }
+    .config-form .row { justify-content: flex-end; }
+    button.mini.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.mini.primary:hover:not(:disabled) { background: var(--accent-hover); }
 
     .panel { display: none; flex-direction: column; gap: 9px; }
     .panel.active { display: flex; min-height: 0; animation: panel-in 0.24s ease-out; }
@@ -284,15 +299,12 @@
     <h1>OverShare</h1>
     <span class="version" id="version"></span>
     <button class="iconbtn" id="mute" data-tip="Mute or unmute interface sounds">🔊</button>
+    <button class="iconbtn" id="settingsBtn" data-tip="Settings: choose, add, import, export or delete configurations">⚙️</button>
   </header>
 
   <main>
     <div>
-      <label>Discord bot</label>
-      <div class="row">
-        <div><input type="password" id="botToken" placeholder="Bot token" autocomplete="off" /></div>
-        <div class="channel-field"><input type="text" id="channelId" placeholder="Channel ID" /></div>
-      </div>
+      <label id="configLabel">Discord bot</label>
       <div id="botStatus" class="tokenstatus checking">Checking bot…</div>
     </div>
     <div class="tabs" id="tabs">
@@ -335,6 +347,32 @@
       </div>
       <div class="list" id="fileList"><div class="empty">Switch here to search for files.</div></div>
       <div class="progress" id="downloadProgress"><div class="bar" id="downloadBar"></div></div>
+    </section>
+
+    <section class="panel settingsPanel" id="settingsPanel">
+      <div>
+        <label for="configSelect">Configuration</label>
+        <div class="row">
+          <div><select class="config-select" id="configSelect" data-tip="The bot and channel to send with and download from"></select></div>
+          <button class="mini" id="newConfig" data-tip="Add a bot token and channel as a new configuration">New Configuration</button>
+        </div>
+      </div>
+      <div class="row token-actions">
+        <button class="mini" id="exportConfig" data-tip="Save this configuration, with its bot token, channel ID and file tokens, to a JSON file">Export Config</button>
+        <button class="mini" id="importConfig" data-tip="Add a configuration from an exported JSON file">Import Config</button>
+        <button class="mini delete-tokens" id="deleteConfig" data-tip="Remove this configuration and its file tokens from the extension; its files stay on Discord">Delete Config</button>
+        <input type="file" id="importConfigFile" accept="application/json,.json" />
+      </div>
+      <div class="hint">Each configuration keeps its own file tokens. A configuration export holds the bot token, so keep it private.</div>
+      <form class="config-form" id="configForm" hidden autocomplete="off">
+        <div><label for="configName">Configuration name</label><input type="text" id="configName" placeholder="e.g. Friends" maxlength="40" /></div>
+        <div><label for="configToken">Discord bot token</label><input type="password" id="configToken" placeholder="Bot token" /></div>
+        <div><label for="configChannel">Discord channel ID</label><input type="text" id="configChannel" placeholder="Channel ID" inputmode="numeric" /></div>
+        <div class="row">
+          <button type="button" class="mini" id="cancelConfig">Cancel</button>
+          <button type="submit" class="mini primary" id="saveConfig" data-tip="Check the bot and save the configuration">Save</button>
+        </div>
+      </form>
     </section>
 
   </main>

@@ -47,13 +47,14 @@ In Discord, go to **User Settings → Advanced** and turn on **Developer Mode**.
 
 1. Open `chrome://extensions` (or `edge://extensions`) and turn on **Developer mode**.
 2. Click **Load unpacked** and choose this folder.
-3. Open the OverShare popup and paste the bot token and channel ID. They're saved as you type. The dot in the header turns green when the bot can reach the channel.
+3. Open the OverShare popup. The first time, Settings opens with a new configuration form: enter a name, the bot token and the channel ID, and click **Save**. The dot in the header turns green when the bot can reach the channel, and the Send tab shows **Connected as `<bot>` · `#<channel>`**.
 
 ## Use
 
 - **Send:** drop a file or folder on the popup, or click to pick one, then click **Send**. When it finishes, copy the file token with **Copy Token** or from the Download list.
 - **Download:** open the Download tab. Files whose tokens you have are listed automatically. Paste a token someone sent you and click **Load** to add it.
-- **Export / Import Tokens** backs up your file tokens as a JSON file. The bot token and channel ID aren't included.
+- **Export / Import Tokens** backs up the current configuration's file tokens as a JSON file. The bot token and channel ID aren't included.
+- **Configurations** (⚙️ in the header): each configuration is one bot token and channel, with its own file tokens. Pick one from the **Configuration** list, or add one with **New Configuration**. **Export Config** saves the bot token, channel ID and all the configuration's file tokens to one JSON file; **Import Config** adds it back (on another computer, say). **Delete Config** removes the configuration and its file tokens from the extension only; its files stay on Discord. Settings from versions before 5.0 become a configuration named "Default".
 - **Delete** removes a file's messages from Discord and its token from the extension.
 
 ## Security and sharing
@@ -74,7 +75,7 @@ This is why OverShare should have **its own bot and its own server**:
 - Send tokens over something private, like a DM, not a public channel.
 - The bot token is stored unencrypted in the extension's local storage. Only install OverShare on computers you trust.
 - If the bot token leaks, go to the Developer Portal, open **Bot**, and click **Reset Token**. The old token stops working immediately; give the new one to your friends.
-- Token export files contain the keys to your files, so keep them as private as the tokens.
+- Token export files contain the keys to your files, so keep them as private as the tokens. Configuration exports also contain the bot token.
 
 ## Limits and good to know
 

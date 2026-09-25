@@ -1,7 +1,7 @@
 "use strict";
 
-const SETTINGS_KEYS = ["botToken", "channelId"];
-const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "botToken", "channelId", "botStatus", "botDot", "flyer", "tabs", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute", "tooltip", "clearPick"];
+const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "botStatus", "botDot", "flyer", "tabs", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute", "tooltip", "clearPick",
+  "settingsBtn", "settingsPanel", "configLabel", "configSelect", "newConfig", "exportConfig", "importConfig", "deleteConfig", "importConfigFile", "configForm", "configName", "configToken", "configChannel", "cancelConfig", "saveConfig"];
 const els = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 let selection = null;
 let payload = null;
@@ -13,9 +13,12 @@ let deletingShas = new Set();
 const LIST_PAGE = 4; // files added to the Download list per load
 let scanner = null, listRun = 0, listLoading = false, listFooter = null, shownFiles = 0, incompleteFiles = 0;
 const itemControls = new Map(); // sha -> the rendered list row and its buttons
-let config = { token: "", channelId: "" };
+// A configuration is one bot and channel: { id, name, token, channelId }.
+const NO_CONFIG = { id: "", name: "", token: "", channelId: "" };
+let configs = [];
+let config = NO_CONFIG;
 let botCheckRun = 0;
-let botCheckTimer = 0;
+let currentTab = "send", lastMainTab = "send";
 
 els.version.textContent = "v" + chrome.runtime.getManifest().version;
 // Restarts a one-shot CSS animation class, even if it is still running.
@@ -111,7 +114,7 @@ function applyUploadState(state) {
     resetUploadProgress();
     refreshSendState();
     if (state.idle) return;
-    if (state.outcome === "ok") { if (old.symmetricKey) lastSentToken = `${old.sha}.${old.symmetricKey}`; playSound("send"); setStatus(`Sent ${state.name || old.name}: ${humanSize(state.size || 0)} (${humanSize(state.speed || 0)}/s) 🚀`, "ok"); launchFlyer("🚀", "fly"); }
+    if (state.outcome === "ok") { if (old.symmetricKey && old.configId === config.id) lastSentToken = `${old.sha}.${old.symmetricKey}`; playSound("send"); setStatus(`Sent ${state.name || old.name}: ${humanSize(state.size || 0)} (${humanSize(state.speed || 0)}/s) 🚀`, "ok"); launchFlyer("🚀", "fly"); }
     else setStatus(state.text || "Upload failed", state.failed ? "err" : "info");
   }
 }
@@ -188,7 +191,7 @@ function setBotStatus(message, kind) {
 }
 async function checkBot() {
   const run = ++botCheckRun;
-  if (!config.token || !config.channelId) { setBotStatus("Enter the bot token and channel ID", "bad"); return false; }
+  if (!config.id) { setBotStatus("No configuration: add one in ⚙️ Settings", "bad"); return false; }
   setBotStatus("Checking bot…", "checking");
   try {
     const bot = await discordRequest(config, "GET", "/users/@me");
@@ -198,26 +201,86 @@ async function checkBot() {
     return true;
   } catch (error) { if (run === botCheckRun) setBotStatus(error.message, "bad"); return false; }
 }
-// Saves on every keystroke so a half-entered setting survives closing the popup;
-// the Discord check waits until typing pauses.
-function onBotInput() {
-  config = { token: els.botToken.value.trim(), channelId: els.channelId.value.trim() };
-  chrome.storage.local.set({ botToken: config.token, channelId: config.channelId });
-  clearTimeout(botCheckTimer);
-  botCheckRun++;
-  setBotStatus("Checking bot…", "checking");
-  botCheckTimer = setTimeout(async () => { if (await checkBot() && els.downloadPanel.classList.contains("active")) refreshFiles(); }, 700);
+function requireConfig() { if (!config.id) throw new Error("add a configuration in Settings first"); }
+// name is "send", "download" or "settings".
+function showTab(name) {
+  currentTab = name;
+  if (name !== "settings") lastMainTab = name;
+  els.tabs.classList.toggle("download", name === "download");
+  els.tabs.classList.toggle("settings", name === "settings");
+  els.tabSend.classList.toggle("active", name === "send"); els.tabDownload.classList.toggle("active", name === "download");
+  els.sendPanel.classList.toggle("active", name === "send"); els.downloadPanel.classList.toggle("active", name === "download");
+  els.settingsPanel.classList.toggle("active", name === "settings"); els.settingsBtn.classList.toggle("active", name === "settings");
+  if (name === "download") refreshFiles();
 }
-function requireConfig() { if (!config.token || !config.channelId) throw new Error("set the bot token and channel ID first"); }
-function showTab(download) {
-  els.tabs.classList.toggle("download", download);
-  els.tabSend.classList.toggle("active", !download); els.tabDownload.classList.toggle("active", download);
-  els.sendPanel.classList.toggle("active", !download); els.downloadPanel.classList.toggle("active", download);
-  if (download) refreshFiles();
+async function storedKeys() { return configTokens(await chrome.storage.local.get(null), config.id); }
+async function storedKey(sha) {
+  const name = tokenKey(config.id, sha);
+  return (await chrome.storage.local.get(name))[name];
 }
-async function storedKeys() {
-  const data = await chrome.storage.local.get(null);
-  return Object.entries(data).filter(([name, value]) => name.endsWith(".symmetricKey") && typeof value === "string").map(([name, value]) => `${name.slice(0, -13)}.${value}`);
+
+// ---- Configurations ----
+
+function newConfigId() { return [...crypto.getRandomValues(new Uint8Array(4))].map((b) => b.toString(16).padStart(2, "0")).join(""); }
+// Before 5.0 there was a single bot, stored as botToken and channelId, with file
+// tokens stored as "<id>.symmetricKey". They become the first configuration.
+async function migrateLegacyStorage(data) {
+  const legacyTokens = Object.keys(data).filter((name) => !name.includes(":") && name.endsWith(".symmetricKey"));
+  const items = { configs: [] };
+  if (data.botToken || data.channelId || legacyTokens.length) {
+    const id = newConfigId();
+    items.configs.push({ id, name: "Default", token: data.botToken || "", channelId: data.channelId || "" });
+    items.activeConfigId = id;
+    for (const name of legacyTokens) items[`${id}:${name}`] = data[name];
+    if (data.lastFileToken) items[lastTokenKey(id)] = data.lastFileToken;
+  }
+  await chrome.storage.local.set(items);
+  await chrome.storage.local.remove(["botToken", "channelId", "lastFileToken", "lastKey", ...legacyTokens]);
+}
+function renderConfigs() {
+  els.configSelect.textContent = "";
+  if (!configs.length) els.configSelect.add(new Option("No configurations yet", ""));
+  for (const item of configs) els.configSelect.add(new Option(item.name, item.id, false, item.id === config.id));
+  els.configSelect.disabled = !configs.length;
+  els.exportConfig.disabled = els.deleteConfig.disabled = !config.id;
+  els.configLabel.textContent = config.id ? config.name : "Discord bot";
+}
+async function selectConfig(id) {
+  config = configs.find((item) => item.id === id) || NO_CONFIG;
+  const data = await chrome.storage.local.get(lastTokenKey(config.id));
+  await chrome.storage.local.set({ activeConfigId: config.id });
+  lastSentToken = data[lastTokenKey(config.id)] || "";
+  els.downloadToken.value = "";
+  renderConfigs();
+  // The file list belongs to the old configuration; it is rebuilt when the Download tab opens.
+  listRun++; scanner = null; itemControls.clear();
+  if (currentTab === "download") refreshFiles();
+  checkBot();
+}
+function uniqueConfigName(name) {
+  const taken = new Set(configs.map((item) => item.name.toLowerCase()));
+  let candidate = name, n = 2;
+  while (taken.has(candidate.toLowerCase())) candidate = `${name} (${n++})`;
+  return candidate;
+}
+// Stored file tokens in the export file format: { "<id>.symmetricKey": key }.
+function tokenFileEntries(tokens) { return Object.fromEntries(tokens.map((token) => { const [sha, key] = token.split("."); return [`${sha}.symmetricKey`, key]; })); }
+// Reads [id, key] pairs from a token export, or from a configuration export's file tokens.
+function tokensFromFile(data) {
+  const source = data?.overshareConfig ? data.files : data;
+  if (!source || Array.isArray(source) || typeof source !== "object") throw new Error("JSON must contain an object");
+  return Object.entries(source)
+    .map(([name, value]) => [name.match(/^([a-f0-9]{16}|[a-f0-9]{64})\.symmetricKey$/i)?.[1], value])
+    .filter(([sha, value]) => sha && typeof value === "string" && /^[A-Za-z0-9_-]+$/.test(value));
+}
+function tokenItems(configId, pairs) { return Object.fromEntries(pairs.map(([sha, key]) => [tokenKey(configId, sha), key])); }
+function busyWithConfig() { return !!activeUpload || !!activeDownload || deletingShas.size > 0; }
+function openConfigForm(open) {
+  els.configForm.hidden = !open;
+  els.newConfig.disabled = open;
+  if (!open) return;
+  els.configName.value = configs.length ? "" : "Default"; els.configToken.value = ""; els.configChannel.value = "";
+  (configs.length ? els.configName : els.configToken).focus();
 }
 function updateItemButtons() {
   for (const [sha, { file, downloadButton, deleteButton }] of itemControls) {
@@ -265,8 +328,7 @@ function fileRow(file, position) {
 }
 async function copyFileToken(file, button) {
   try {
-    const keyData = await chrome.storage.local.get(`${file.sha}.symmetricKey`);
-    const symmetricKey = keyData[`${file.sha}.symmetricKey`];
+    const symmetricKey = await storedKey(file.sha);
     if (!symmetricKey) throw new Error("token is not stored locally");
     await navigator.clipboard.writeText(`${file.sha}.${symmetricKey}`);
     flashCopied(button);
@@ -274,8 +336,7 @@ async function copyFileToken(file, button) {
   } catch (error) { setStatus("Copy failed: " + error.message, "err"); }
 }
 async function deleteFileToken(file) {
-  const keyData = await chrome.storage.local.get(`${file.sha}.symmetricKey`);
-  if (!keyData[`${file.sha}.symmetricKey`]) { setStatus("Delete failed: token is not stored locally.", "err"); return; }
+  if (!await storedKey(file.sha)) { setStatus("Delete failed: token is not stored locally.", "err"); return; }
   if (!confirm(`Delete "${file.name}" from Discord and local storage? This cannot be undone.`)) return;
   try { requireConfig(); } catch (error) { setStatus("Delete failed: " + error.message, "err"); return; }
   startDelete([file.sha], file.name);
@@ -306,7 +367,7 @@ async function refreshFiles() {
   const run = ++listRun;
   scanner = null; listLoading = false; shownFiles = 0; incompleteFiles = 0;
   itemControls.clear();
-  if (!config.token || !config.channelId) { els.fileList.innerHTML = '<div class="empty">Set the bot token and channel ID first.</div>'; return; }
+  if (!config.id) { els.fileList.innerHTML = '<div class="empty">Add a configuration in ⚙️ Settings first.</div>'; return; }
   els.fileList.textContent = "";
   listFooter = document.createElement("div"); listFooter.className = "empty";
   els.fileList.appendChild(listFooter);
@@ -354,8 +415,7 @@ async function downloadFile(file) {
     requireConfig();
     let dirHandle = null;
     if (file.kind === "folder" && window.showDirectoryPicker) dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
-    const keyData = await chrome.storage.local.get(`${file.sha}.symmetricKey`);
-    const key = `${file.sha}.${keyData[`${file.sha}.symmetricKey`]}`;
+    const key = `${file.sha}.${await storedKey(file.sha)}`;
     activeDownload = { active: true, sha: file.sha, name: file.name, phase: "downloading", done: 0, totalBytes: 0 };
     applyDownloadState(activeDownload);
     transferChannel.postMessage({ type: "startDownload", job: { config, key, sha: file.sha, name: file.name, kind: file.kind, dirHandle } });
@@ -418,7 +478,8 @@ els.loadToken.addEventListener("click", async () => {
   const value = els.downloadToken.value.trim();
   const match = value.match(/^([a-f0-9]{16}|[a-f0-9]{64})\.([A-Za-z0-9_-]+)$/i);
   if (!match) { setStatus("Enter a valid file token (ID.key).", "err"); return; }
-  await chrome.storage.local.set({ [`${match[1]}.symmetricKey`]: match[2] });
+  if (!config.id) { setStatus("Add a configuration in Settings first.", "err"); return; }
+  await chrome.storage.local.set({ [tokenKey(config.id, match[1])]: match[2] });
   els.downloadToken.value = "";
   setStatus("File token loaded.", "ok");
   refreshFiles();
@@ -431,22 +492,24 @@ function downloadJson(filename, value) {
   anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+// Token exports hold only file tokens, never the bot token or channel ID.
 els.exportStorage.addEventListener("click", async () => {
-  const data = await chrome.storage.local.get(null);
-  for (const key of SETTINGS_KEYS) delete data[key];
-  downloadJson("overshare-storage.json", data);
-  setStatus("File tokens exported.", "ok");
+  if (!config.id) { setStatus("Add a configuration in Settings first.", "err"); return; }
+  const tokens = await storedKeys();
+  downloadJson("overshare-tokens.json", tokenFileEntries(tokens));
+  setStatus(`${tokens.length} file token(s) exported.`, "ok");
 });
 els.importStorage.addEventListener("click", () => els.importFile.click());
 els.importFile.addEventListener("change", async (event) => {
   const file = event.target.files[0];
   if (!file) return;
   try {
-    const data = JSON.parse(await file.text());
-    if (!data || Array.isArray(data) || typeof data !== "object") throw new Error("JSON must contain an object");
-    await chrome.storage.local.set(data);
+    requireConfig();
+    const pairs = tokensFromFile(JSON.parse(await file.text()));
+    if (!pairs.length) throw new Error("no file tokens found in the file");
+    await chrome.storage.local.set(tokenItems(config.id, pairs));
     els.downloadToken.value = "";
-    setStatus("File tokens imported.", "ok");
+    setStatus(`${pairs.length} file token(s) imported into ${config.name}.`, "ok");
     refreshFiles();
   } catch (error) { setStatus("Import failed: " + error.message, "err"); }
   event.target.value = "";
@@ -473,13 +536,13 @@ els.send.addEventListener("click", async () => {
     return;
   }
   if (!payload) return;
-  if (!config.token || !config.channelId) { setStatus("Set the bot token and channel ID first.", "err"); return; }
+  if (!config.id) { setStatus("Add a configuration in Settings first.", "err"); return; }
   els.send.disabled = true; els.send.textContent = "Starting…"; els.progress.classList.add("show"); els.bar.style.width = "0%";
   const metadata = { sha: payload.sha, name: payload.name, kind: payload.kind, originalSize: payload.originalSize };
   try {
     // File objects cross to the engine by reference; their contents are read there, piece by piece.
     transferChannel.postMessage({ type: "startUpload", job: { metadata, config, symmetricKey: payload.symmetricKey, files: payload.files } });
-    activeUpload = { name: payload.name, sha: payload.sha, symmetricKey: payload.symmetricKey, total: null, sent: 0 };
+    activeUpload = { name: payload.name, sha: payload.sha, symmetricKey: payload.symmetricKey, configId: config.id, total: null, sent: 0 };
     // Each send gets a fresh ID and key, so the selection is used up.
     clearSelection();
     refreshSendState();
@@ -488,7 +551,72 @@ els.send.addEventListener("click", async () => {
 els.fileList.addEventListener("scroll", loadIfAtBottom);
 // Keeps the "5min ago" labels current while the popup stays open.
 setInterval(() => { for (const when of els.fileList.querySelectorAll(".sent-at")) when.textContent = timeAgo(Number(when.dataset.time)); }, 60000);
-els.tabSend.addEventListener("click", () => showTab(false)); els.tabDownload.addEventListener("click", () => showTab(true));
+els.tabSend.addEventListener("click", () => showTab("send")); els.tabDownload.addEventListener("click", () => showTab("download"));
+els.settingsBtn.addEventListener("click", () => showTab(currentTab === "settings" ? lastMainTab : "settings"));
+
+els.configSelect.addEventListener("change", async () => { await selectConfig(els.configSelect.value); setStatus(`Switched to ${config.name}.`, "ok"); });
+els.newConfig.addEventListener("click", () => openConfigForm(true));
+els.cancelConfig.addEventListener("click", () => openConfigForm(false));
+els.configForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const name = els.configName.value.trim(), token = els.configToken.value.trim(), channelId = els.configChannel.value.trim();
+  if (!name || !token || !channelId) { setStatus("Fill in the name, bot token and channel ID.", "err"); return; }
+  if (!/^\d+$/.test(channelId)) { setStatus("The channel ID is a number; copy it from Discord.", "err"); return; }
+  if (configs.some((item) => item.name.toLowerCase() === name.toLowerCase())) { setStatus(`A configuration named ${name} already exists.`, "err"); return; }
+  els.saveConfig.disabled = true;
+  setStatus("Checking bot…", "info");
+  try {
+    await discordRequest({ token, channelId }, "GET", `/channels/${channelId}`);
+  } catch (error) {
+    if (!confirm(`Discord check failed: ${error.message}\n\nSave the configuration anyway?`)) { setStatus("Check failed: " + error.message, "err"); els.saveConfig.disabled = false; return; }
+  }
+  els.saveConfig.disabled = false;
+  const id = newConfigId();
+  configs = [...configs, { id, name, token, channelId }];
+  await chrome.storage.local.set({ configs });
+  openConfigForm(false);
+  await selectConfig(id);
+  setStatus(`Configuration ${name} added.`, "ok");
+});
+// A configuration export holds everything needed to use it elsewhere, bot token included.
+els.exportConfig.addEventListener("click", async () => {
+  if (!config.id) return;
+  const tokens = await storedKeys();
+  const safeName = config.name.replace(/[^\w-]+/g, "_");
+  downloadJson(`overshare-config-${safeName}.json`, { overshareConfig: 1, name: config.name, botToken: config.token, channelId: config.channelId, files: tokenFileEntries(tokens) });
+  setStatus(`${config.name} exported with ${tokens.length} file token(s). The file holds the bot token: keep it private.`, "ok");
+});
+els.importConfig.addEventListener("click", () => els.importConfigFile.click());
+els.importConfigFile.addEventListener("change", async (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
+  try {
+    const data = JSON.parse(await file.text());
+    if (data?.overshareConfig !== 1 || typeof data.botToken !== "string" || !/^\d+$/.test(String(data.channelId || ""))) throw new Error("not an OverShare configuration export");
+    const pairs = tokensFromFile(data);
+    // The same bot and channel already here just gets the file tokens added.
+    const existing = configs.find((item) => item.token === data.botToken && item.channelId === String(data.channelId));
+    const id = existing?.id || newConfigId();
+    if (!existing) configs = [...configs, { id, name: uniqueConfigName(String(data.name || "").trim().slice(0, 40) || "Imported"), token: data.botToken, channelId: String(data.channelId) }];
+    await chrome.storage.local.set({ configs, ...tokenItems(id, pairs) });
+    await selectConfig(id);
+    setStatus(existing ? `Added ${pairs.length} file token(s) to ${config.name}, which has the same bot and channel.` : `Configuration ${config.name} imported with ${pairs.length} file token(s).`, "ok");
+  } catch (error) { setStatus("Import failed: " + error.message, "err"); }
+  event.target.value = "";
+});
+els.deleteConfig.addEventListener("click", async () => {
+  if (!config.id) return;
+  if (busyWithConfig()) { setStatus("Wait for the running send, download or delete to finish.", "info"); return; }
+  const tokens = await storedKeys();
+  if (!confirm(`Delete the configuration ${config.name} and its ${tokens.length} file token(s) from this extension?\n\nIts files stay on Discord, but can't be downloaded without their tokens. Export the configuration first to keep them.`)) return;
+  const { id, name } = config;
+  const data = await chrome.storage.local.get(null);
+  configs = configs.filter((item) => item.id !== id);
+  await chrome.storage.local.set({ configs });
+  await chrome.storage.local.remove(Object.keys(data).filter((key) => key.startsWith(`${id}:`)));
+  await selectConfig(configs[0]?.id || "");
+  setStatus(`Configuration ${name} deleted.`, "ok");
+});
 const transferChannel = new BroadcastChannel("overshare");
 transferChannel.onmessage = (event) => {
   const message = event.data || {};
@@ -496,18 +624,24 @@ transferChannel.onmessage = (event) => {
   else if (message.type === "downloadState") applyDownloadState(message.state);
   else if (message.type === "deleteState") applyDeleteState(message.state);
 };
-els.botToken.addEventListener("input", onBotInput);
-els.channelId.addEventListener("input", onBotInput);
-// The engine records each finished send as lastFileToken, and clears it when that file is deleted.
-chrome.storage.onChanged.addListener((changes, area) => { if (area === "local" && changes.lastFileToken) lastSentToken = changes.lastFileToken.newValue || ""; });
-chrome.storage.local.get(["activeUpload", "muted", "lastFileToken", ...SETTINGS_KEYS], (data) => {
-  lastSentToken = data.lastFileToken || "";
+// The engine records each configuration's finished send as its lastFileToken, and clears it when that file is deleted.
+chrome.storage.onChanged.addListener((changes, area) => {
+  const change = area === "local" && config.id && changes[lastTokenKey(config.id)];
+  if (change) lastSentToken = change.newValue || "";
+});
+(async () => {
+  let data = await chrome.storage.local.get(null);
+  if (!Array.isArray(data.configs)) { await migrateLegacyStorage(data); data = await chrome.storage.local.get(null); }
+  configs = data.configs;
+  config = configs.find((item) => item.id === data.activeConfigId) || configs[0] || NO_CONFIG;
+  lastSentToken = data[lastTokenKey(config.id)] || "";
+  renderConfigs();
   muted = !!data.muted; els.mute.textContent = muted ? "🔇" : "🔊";
-  config = { token: data.botToken || "", channelId: data.channelId || "" };
-  els.botToken.value = config.token; els.channelId.value = config.channelId;
   // Restore the stored upload before asking the engine, so its reply can confirm or clear it.
-  if (data.activeUpload) activeUpload = { ...data.activeUpload, restored: true };
+  if (data.activeUpload) activeUpload = { ...data.activeUpload, configId: data.activeUpload.config?.id, restored: true };
   refreshSendState();
   chrome.runtime.sendMessage({ target: "background", type: "ensureEngine" }).then(() => transferChannel.postMessage({ type: "hello" })).catch(() => {});
   checkBot();
-});
+  // With nothing set up yet, start in Settings with the new configuration form open.
+  if (!configs.length) { showTab("settings"); openConfigForm(true); }
+})();

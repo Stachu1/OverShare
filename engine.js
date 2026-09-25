@@ -65,7 +65,7 @@ async function cleanUpUpload(record) {
 		await deleteTransfers(record.config, [record.sha]);
 		return null;
 	} catch (error) {
-		await storage("set", { [`${record.sha}.symmetricKey`]: record.symmetricKey }).catch(() => {});
+		await storage("set", { [tokenKey(record.config.id, record.sha)]: record.symmetricKey }).catch(() => {});
 		return error;
 	}
 }
@@ -226,7 +226,7 @@ async function uploadFiles(job) {
 		await sendChecked(config, "the file manifest",
 			() => discordRequest(config, "POST", path, { json: { content }, signal: abortController.signal }),
 			(sent) => sent.content === content);
-		await storage("set", { [`${sha}.symmetricKey`]: job.symmetricKey, lastFileToken: `${sha}.${job.symmetricKey}` });
+		await storage("set", { [tokenKey(config.id, sha)]: job.symmetricKey, [lastTokenKey(config.id)]: `${sha}.${job.symmetricKey}` });
 		await storage("remove", ["activeUpload"]);
 		const seconds = (performance.now() - startedAt) / 1000;
 		publish({ active: false, outcome: "ok", name, total: index, size: originalSize, speed: seconds > 0 ? originalSize / seconds : 0 });
@@ -264,9 +264,9 @@ async function cleanUpInterruptedUpload(record) {
 const ready = (async () => {
 	const { activeUpload: record } = await storage("get", ["activeUpload"]);
 	if (!record?.sha) return;
-	if (!record.config) {
-		const settings = await storage("get", ["botToken", "channelId"]);
-		record.config = { token: settings.botToken, channelId: settings.channelId };
+	if (!record.config?.id) {
+		const { configs, activeConfigId } = await storage("get", ["configs", "activeConfigId"]);
+		record.config = configs?.find((config) => config.id === activeConfigId) || { id: activeConfigId, ...record.config };
 	}
 	active = { name: record.name, sent: 0, total: record.total, bytesSent: 0, totalBytes: 0, meter: new TransferMeter(0), cleaning: true };
 	cleanUpInterruptedUpload(record);
@@ -379,13 +379,11 @@ function publishDeletes(finished = null) {
 	const current = deleteJobs[0];
 	channel.postMessage({ type: "deleteState", state: { pendingShas: pendingDeleteShas(), current: current ? { label: current.label, deleted: current.deleted } : null, finished } });
 }
-async function removeTokens(shas) {
+async function removeTokens(configId, shas) {
 	const data = await storage("get", null);
-	const wanted = new Set(shas);
-	const matches = (token) => typeof token === "string" && wanted.has(token.split(".", 1)[0]);
-	const removals = Object.keys(data).filter((name) =>
-		(name.endsWith(".symmetricKey") && wanted.has(name.slice(0, -13)))
-		|| ((name === "lastFileToken" || name === "lastKey") && matches(data[name])));
+	const removals = shas.map((sha) => tokenKey(configId, sha)).filter((name) => name in data);
+	const last = data[lastTokenKey(configId)];
+	if (typeof last === "string" && shas.includes(last.split(".", 1)[0])) removals.push(lastTokenKey(configId));
 	if (removals.length) await storage("remove", removals);
 }
 async function runDelete(job) {
@@ -394,7 +392,7 @@ async function runDelete(job) {
 	try {
 		const deleted = await deleteTransfers(job.config, job.shas, (count) => { job.deleted = count; publishDeletes(); });
 		// Tokens go only after Discord is clean, so an interrupted delete can be retried.
-		await removeTokens(job.shas);
+		await removeTokens(job.config.id, job.shas);
 		finished = { outcome: "ok", shas: job.shas, text: `Deleted ${job.label}: ${deleted} Discord message(s) removed.` };
 	} catch (error) {
 		finished = { outcome: "error", shas: job.shas, text: `Delete failed: ${error.message}` };
