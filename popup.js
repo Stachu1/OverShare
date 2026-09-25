@@ -186,9 +186,14 @@ document.addEventListener("mouseover", (event) => { const button = event.target.
 document.addEventListener("mouseout", (event) => { if (!event.relatedTarget?.closest?.("button")) hoveredButton = null; });
 document.addEventListener("click", (event) => { const button = event.target.closest("button"); if (button && button !== els.mute) playSound("click"); }, true);
 
+let botState = "checking";
+// The header dot, the status line and the "In use" label of the configuration list follow the bot check.
 function setBotStatus(message, kind) {
+  botState = kind;
   els.botStatus.textContent = message; els.botStatus.className = `tokenstatus ${kind}`;
   els.botDot.className = `dot ${kind}`;
+  const inUse = els.configList.querySelector(".in-use");
+  if (inUse) { inUse.className = `in-use ${kind}`; inUse.title = message; }
 }
 async function checkBot() {
   const run = ++botCheckRun;
@@ -271,7 +276,7 @@ function renderConfigs() {
     const meta = document.createElement("div"); meta.className = "meta";
     const name = document.createElement("div"); name.className = "fname"; name.textContent = item.name;
     const sub = document.createElement("div"); sub.className = "sub";
-    sub.innerHTML = `${current ? '<span class="in-use">In use</span> · ' : ""}Channel ${escapeHtml(item.channelId)}`;
+    sub.innerHTML = `${current ? `<span class="in-use ${botState}" title="${escapeHtml(els.botStatus.textContent)}">In use</span> · ` : ""}Channel ${escapeHtml(item.channelId)}`;
     meta.append(name, sub);
     const actions = document.createElement("div"); actions.className = "secondary-actions";
     const editButton = document.createElement("button"); editButton.className = "copy-token"; editButton.textContent = "Edit";
@@ -627,7 +632,8 @@ els.configForm.addEventListener("submit", async (event) => {
     try {
       await discordRequest({ token, channelId }, "GET", `/channels/${channelId}`);
     } catch (error) {
-      if (!confirm(`Discord check failed: ${error.message}\n\nSave the configuration anyway?`)) { setStatus("Check failed: " + error.message, "err"); els.saveConfig.disabled = false; return; }
+      // A wrong token (401) is saved without asking; its red "In use" label shows the problem.
+      if (error.status !== 401 && !confirm(`Discord check failed: ${error.message}\n\nSave the configuration anyway?`)) { setStatus("Check failed: " + error.message, "err"); els.saveConfig.disabled = false; return; }
     }
     els.saveConfig.disabled = false;
   }
