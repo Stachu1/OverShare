@@ -603,7 +603,12 @@ els.fileList.addEventListener("scroll", loadIfAtBottom);
 // Keeps the "5min ago" labels current while the popup stays open.
 setInterval(() => { for (const when of els.fileList.querySelectorAll(".sent-at")) when.textContent = timeAgo(Number(when.dataset.time)); }, 60000);
 els.tabSend.addEventListener("click", () => showTab("send")); els.tabDownload.addEventListener("click", () => showTab("download"));
-els.settingsBtn.addEventListener("click", () => showTab(currentTab === "settings" ? lastMainTab : "settings"));
+els.settingsBtn.addEventListener("click", () => {
+  const opening = currentTab !== "settings";
+  els.settingsBtn.classList.remove("spin-open", "spin-close");
+  replayAnimation(els.settingsBtn, opening ? "spin-open" : "spin-close");
+  showTab(opening ? "settings" : lastMainTab);
+});
 
 els.newConfig.addEventListener("click", () => openConfigForm(true));
 els.cancelConfig.addEventListener("click", () => openConfigForm(false));

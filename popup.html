@@ -62,6 +62,12 @@
     }
     .iconbtn:hover { opacity: 1; }
     .iconbtn.active { opacity: 1; filter: drop-shadow(0 0 4px var(--accent)); }
+    /* The settings gear spins forward when Settings opens and back when it closes */
+    #settingsBtn { display: inline-block; }
+    #settingsBtn.spin-open { animation: gear-open 0.9s cubic-bezier(0.2, 0.8, 0.2, 1); }
+    #settingsBtn.spin-close { animation: gear-close 0.9s cubic-bezier(0.2, 0.8, 0.2, 1); }
+    @keyframes gear-open { from { transform: rotate(0); } to { transform: rotate(1080deg); } }
+    @keyframes gear-close { from { transform: rotate(1080deg); } to { transform: rotate(0); } }
 
     main { flex: 1; min-height: 0; overflow: hidden; padding: 14px; display: flex; flex-direction: column; gap: 9px; }
 
@@ -263,6 +269,8 @@
     /* The file list still scrolls (wheel, touchpad, keyboard), just without a visible bar */
     #fileList { scrollbar-width: none; }
     #fileList::-webkit-scrollbar { display: none; }
+    #configList { scrollbar-width: none; }
+    #configList::-webkit-scrollbar { display: none; }
     .item {
       display: flex; align-items: center; gap: 10px;
       padding: 7px 12px; background: var(--panel-2);
