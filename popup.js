@@ -189,6 +189,8 @@ function playSound(name) {
   if (name === "click") playTone(720, 0.035);
   if (name === "send") { playTone(523, 0.1); playTone(659, 0.1, 0.09); playTone(784, 0.14, 0.18); }
   if (name === "download") { playTone(784, 0.1); playTone(523, 0.16, 0.1); }
+  if (name === "connected") { playTone(880, 0.08); playTone(1175, 0.16, 0.08); }
+  if (name === "failed") { playTone(392, 0.12); playTone(262, 0.24, 0.11); }
 }
 // Ratchet clicks for the settings gear's spin: one per SPIN_TOOTH_DEG of turn, timed
 // along the spin's easing curve (gear-open in popup.html), so they come fast while it
@@ -242,6 +244,7 @@ function setBotStatus(message, kind) {
   const inUse = els.configList.querySelector(".in-use");
   if (inUse) { inUse.className = `in-use ${kind}`; inUse.title = message; }
 }
+// Resolves true when connected, false on an error, and null when a newer check took over.
 async function checkBot() {
   const run = ++botCheckRun;
   if (!config.id) { setBotStatus("No configuration: add one in ⚙️ Settings", "bad"); return false; }
@@ -249,10 +252,14 @@ async function checkBot() {
   try {
     const bot = await discordRequest(config, "GET", "/users/@me");
     const target = await discordRequest(config, "GET", `/channels/${config.channelId}`);
-    if (run !== botCheckRun) return false;
+    if (run !== botCheckRun) return null;
     setBotStatus(`Connected as ${bot.username} · ${target.name ? "#" + target.name : "DM"}`, "ok");
     return true;
-  } catch (error) { if (run === botCheckRun) setBotStatus(error.message, "bad"); return false; }
+  } catch (error) {
+    if (run !== botCheckRun) return null;
+    setBotStatus(error.message, "bad");
+    return false;
+  }
 }
 function requireConfig() { if (!config.id) throw new Error("add a configuration in Settings first"); }
 // name is "send", "download" or "settings".
@@ -337,12 +344,13 @@ function renderConfigs() {
     deleteButton.addEventListener("click", (event) => { event.stopPropagation(); deleteConfig(item); });
     actions.append(editButton, exportButton, deleteButton);
     row.append(meta, actions);
-    if (!current) row.addEventListener("click", async () => { hideTip(); await selectConfig(item.id); setStatus(`Switched to ${item.name}.`, "ok"); });
+    if (!current) row.addEventListener("click", async () => { hideTip(); await selectConfig(item.id, { sound: true }); setStatus(`Switched to ${item.name}.`, "ok"); });
     els.configList.append(row);
   });
   els.configLabel.textContent = config.id ? config.name : "Discord bot";
 }
-async function selectConfig(id) {
+// With sound, the bot check ends with a success or failure sound.
+async function selectConfig(id, { sound = false } = {}) {
   config = configs.find((item) => item.id === id) || NO_CONFIG;
   const data = await chrome.storage.local.get(lastTokenKey(config.id));
   await chrome.storage.local.set({ activeConfigId: config.id });
@@ -352,7 +360,7 @@ async function selectConfig(id) {
   // The file list belongs to the old configuration; it is rebuilt when the Download tab opens.
   listRun++; scanner = null; itemControls.clear();
   if (currentTab === "download") refreshFiles();
-  checkBot();
+  checkBot().then((connected) => { if (sound && connected !== null) playSound(connected ? "connected" : "failed"); });
 }
 function uniqueConfigName(name) {
   const taken = new Set(configs.map((item) => item.name.toLowerCase()));
