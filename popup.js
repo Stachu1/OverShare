@@ -1,7 +1,7 @@
 "use strict";
 
 const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "botStatus", "botDot", "flyer", "tabs", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute", "tooltip", "clearPick",
-  "settingsBtn", "settingsPanel", "configLabel", "configList", "configDrop", "newConfig", "importConfigFile", "configForm", "configName", "configToken", "configChannel", "cancelConfig", "saveConfig"];
+  "settingsBtn", "settingsPanel", "configLabel", "configList", "configDrop", "newConfig", "importConfigFile", "configForm", "configFormTitle", "configName", "configToken", "configChannel", "cancelConfig", "saveConfig"];
 const els = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 let selection = null;
 let payload = null;
@@ -19,6 +19,7 @@ let configs = [];
 let config = NO_CONFIG;
 let botCheckRun = 0;
 let currentTab = "send", lastMainTab = "send";
+let editingId = null; // the configuration the form is editing, or null for a new one
 
 els.version.textContent = "v" + chrome.runtime.getManifest().version;
 // Restarts a one-shot CSS animation class, even if it is still running.
@@ -221,7 +222,7 @@ function showTab(name) {
 // configuration are kept in session storage (memory only, cleared when the browser
 // closes). Reopening the popup, say after copying the bot token, lands back there.
 function saveViewState() {
-  const form = els.configForm.hidden ? null : { name: els.configName.value, token: els.configToken.value, channelId: els.configChannel.value };
+  const form = els.configForm.hidden ? null : { editingId, name: els.configName.value, token: els.configToken.value, channelId: els.configChannel.value };
   chrome.storage.session.set({ view: { tab: currentTab, lastMainTab, form } }).catch(() => {});
 }
 async function restoreViewState() {
@@ -230,7 +231,7 @@ async function restoreViewState() {
   else if (view) { lastMainTab = view.lastMainTab || "send"; showTab(view.tab || "send"); }
   // With nothing set up yet, Settings opens with the new configuration form.
   if (!view?.form && configs.length) return;
-  openConfigForm(true);
+  openConfigForm(true, configs.find((item) => item.id === view?.form?.editingId));
   if (view?.form) {
     els.configName.value = view.form.name || ""; els.configToken.value = view.form.token || ""; els.configChannel.value = view.form.channelId || "";
     saveViewState();
@@ -273,13 +274,16 @@ function renderConfigs() {
     sub.innerHTML = `${current ? '<span class="in-use">In use</span> · ' : ""}Channel ${escapeHtml(item.channelId)}`;
     meta.append(name, sub);
     const actions = document.createElement("div"); actions.className = "secondary-actions";
+    const editButton = document.createElement("button"); editButton.className = "copy-token"; editButton.textContent = "Edit";
+    editButton.dataset.tip = "Change this configuration's name, bot token or channel ID";
+    editButton.addEventListener("click", (event) => { event.stopPropagation(); hideTip(); openConfigForm(true, item); });
     const exportButton = document.createElement("button"); exportButton.className = "copy-token"; exportButton.textContent = "Export";
     exportButton.dataset.tip = "Save this configuration, with its bot token, channel ID and file tokens, to a JSON file";
     exportButton.addEventListener("click", (event) => { event.stopPropagation(); exportConfig(item); });
     const deleteButton = document.createElement("button"); deleteButton.className = "delete-file"; deleteButton.textContent = "Delete";
     deleteButton.dataset.tip = "Remove this configuration and its file tokens from the extension; its files stay on Discord";
     deleteButton.addEventListener("click", (event) => { event.stopPropagation(); deleteConfig(item); });
-    actions.append(exportButton, deleteButton);
+    actions.append(editButton, exportButton, deleteButton);
     row.append(meta, actions);
     if (!current) row.addEventListener("click", async () => { hideTip(); await selectConfig(item.id); setStatus(`Switched to ${item.name}.`, "ok"); });
     els.configList.append(row);
@@ -316,12 +320,16 @@ function tokensFromFile(data) {
 }
 function tokenItems(configId, pairs) { return Object.fromEntries(pairs.map(([sha, key]) => [tokenKey(configId, sha), key])); }
 function busyWithConfig() { return !!activeUpload || !!activeDownload || deletingShas.size > 0; }
-function openConfigForm(open) {
+// item is the configuration to edit; without it the form adds a new one.
+function openConfigForm(open, item = null) {
   els.configForm.hidden = !open;
   els.newConfig.disabled = open;
+  editingId = open && item ? item.id : null;
   if (open) {
-    els.configName.value = configs.length ? "" : "Default"; els.configToken.value = ""; els.configChannel.value = "";
-    (configs.length ? els.configName : els.configToken).focus();
+    els.configFormTitle.textContent = item ? `Edit ${item.name}` : "New configuration";
+    els.configName.value = item ? item.name : configs.length ? "" : "Default";
+    els.configToken.value = item?.token || ""; els.configChannel.value = item?.channelId || "";
+    (item || configs.length ? els.configName : els.configToken).focus();
   }
   saveViewState();
 }
@@ -605,21 +613,27 @@ els.configForm.addEventListener("submit", async (event) => {
   const name = els.configName.value.trim(), token = els.configToken.value.trim(), channelId = els.configChannel.value.trim();
   if (!name || !token || !channelId) { setStatus("Fill in the name, bot token and channel ID.", "err"); return; }
   if (!/^\d+$/.test(channelId)) { setStatus("The channel ID is a number; copy it from Discord.", "err"); return; }
-  if (configs.some((item) => item.name.toLowerCase() === name.toLowerCase())) { setStatus(`A configuration named ${name} already exists.`, "err"); return; }
-  els.saveConfig.disabled = true;
-  setStatus("Checking bot…", "info");
-  try {
-    await discordRequest({ token, channelId }, "GET", `/channels/${channelId}`);
-  } catch (error) {
-    if (!confirm(`Discord check failed: ${error.message}\n\nSave the configuration anyway?`)) { setStatus("Check failed: " + error.message, "err"); els.saveConfig.disabled = false; return; }
+  if (configs.some((item) => item.id !== editingId && item.name.toLowerCase() === name.toLowerCase())) { setStatus(`A configuration named ${name} already exists.`, "err"); return; }
+  const edited = configs.find((item) => item.id === editingId);
+  // A rename alone needs no new check with Discord.
+  if (!edited || edited.token !== token || edited.channelId !== channelId) {
+    els.saveConfig.disabled = true;
+    setStatus("Checking bot…", "info");
+    try {
+      await discordRequest({ token, channelId }, "GET", `/channels/${channelId}`);
+    } catch (error) {
+      if (!confirm(`Discord check failed: ${error.message}\n\nSave the configuration anyway?`)) { setStatus("Check failed: " + error.message, "err"); els.saveConfig.disabled = false; return; }
+    }
+    els.saveConfig.disabled = false;
   }
-  els.saveConfig.disabled = false;
-  const id = newConfigId();
-  configs = [...configs, { id, name, token, channelId }];
+  const id = edited?.id || newConfigId();
+  configs = edited ? configs.map((item) => item.id === id ? { id, name, token, channelId } : item) : [...configs, { id, name, token, channelId }];
   await chrome.storage.local.set({ configs });
   openConfigForm(false);
-  await selectConfig(id);
-  setStatus(`Configuration ${name} added.`, "ok");
+  // Editing another configuration leaves the one in use selected.
+  if (!edited || id === config.id) await selectConfig(id);
+  else renderConfigs();
+  setStatus(edited ? `Configuration ${name} saved.` : `Configuration ${name} added.`, "ok");
 });
 // A configuration export holds everything needed to use it elsewhere, bot token included.
 async function exportConfig(item) {
@@ -661,6 +675,7 @@ async function deleteConfig(item) {
   const count = configTokens(data, item.id).length;
   if (!confirm(`Delete the configuration ${item.name} and its ${count} file token(s) from this extension?\n\nIts files stay on Discord, but can't be downloaded without their tokens. Export the configuration first to keep them.`)) return;
   configs = configs.filter((other) => other.id !== item.id);
+  if (editingId === item.id) openConfigForm(false);
   await chrome.storage.local.set({ configs });
   await chrome.storage.local.remove(Object.keys(data).filter((key) => key.startsWith(`${item.id}:`)));
   if (item.id === config.id) await selectConfig(configs[0]?.id || "");

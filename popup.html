@@ -130,7 +130,8 @@
     .config-item:hover { border-color: var(--muted); }
     .config-item.current { border-color: var(--accent); cursor: default; }
     .config-item .in-use { color: var(--ok); font-weight: 600; }
-    .config-item .secondary-actions { min-width: 104px; }
+    .config-item .secondary-actions { flex-shrink: 0; }
+    .config-form .form-title { font-size: 13px; font-weight: 600; }
     .config-drop { font-size: 12px; }
     .config-form { display: flex; flex-direction: column; gap: 9px; padding: 11px; border: 1px solid var(--border); border-radius: 8px; animation: panel-in 0.24s ease-out; }
     .config-form[hidden] { display: none; }
@@ -359,6 +360,7 @@
         <button class="mini" id="newConfig" data-tip="Add a bot token and channel as a new configuration">New Configuration</button>
       </div>
       <form class="config-form" id="configForm" hidden autocomplete="off">
+        <div class="form-title" id="configFormTitle">New configuration</div>
         <div><label for="configName">Configuration name</label><input type="text" id="configName" placeholder="e.g. Friends" maxlength="40" /></div>
         <div><label for="configToken">Discord bot token</label><input type="password" id="configToken" placeholder="Bot token" /></div>
         <div><label for="configChannel">Discord channel ID</label><input type="text" id="configChannel" placeholder="Channel ID" inputmode="numeric" /></div>
