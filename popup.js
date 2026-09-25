@@ -157,12 +157,17 @@ function launchFlyer(emoji, className) {
   replayAnimation(els.flyer, className);
 }
 
+// The audio starts when the popup opens, and is resumed on any press (Chrome keeps it
+// suspended until a user gesture), so a sound on press plays at once instead of
+// waiting for the audio device to wake up.
 let audioContext = null;
 function audio() {
-  if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
-  if (audioContext.state === "suspended") audioContext.resume();
+  if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: "interactive" });
+  if (audioContext.state === "suspended") audioContext.resume().catch(() => {});
   return audioContext;
 }
+try { audio(); } catch (_) {}
+document.addEventListener("pointerdown", () => { try { audio(); } catch (_) {} }, true);
 function playTone(frequency, duration, delay = 0) {
   if (muted) return;
   try {
