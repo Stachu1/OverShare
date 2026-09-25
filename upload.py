@@ -8,6 +8,10 @@ extension, so the file shows up in its Download list. The file token
 ("<id>.<key>") is printed and added to overshare-tokens.json next to this script,
 which the extension's Import Tokens button reads.
 
+A channel whose name starts with open_ is open: the file is encrypted with the key
+built into OverShare, so everyone with the bot token and OverShare sees it in the
+list without a file token, and no token is saved.
+
 Needs: pip install requests cryptography
 """
 
@@ -36,11 +40,18 @@ ID_BYTES = 8
 # message, so the channel is checked for it before sending again.
 SEND_ATTEMPTS = 4
 SEND_RECHECK_SECONDS = 3
+# Open channels share one key, the same as OPEN_MASTER_KEY in shared.js.
+OPEN_PREFIX = "open_"
+OPEN_MASTER_KEY = "LlSzLppn9IsvmOWEB7yTjeZYvVqoAYD-IL-KyZ_lm6s"
 TOKENS_FILE = Path(__file__).resolve().parent / "overshare-tokens.json"
 
 
 def b64url(data):
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def b64url_decode(value):
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
 
 def chunk_iv(prefix, index):
@@ -59,7 +70,7 @@ def js_json(value):
 def manifest_tag(manifest, cipher):
     aad = js_json(["OVERSHARE-MANIFEST", manifest["sha"], manifest["name"], manifest["kind"],
                    manifest["originalSize"], manifest["encryptedSize"], manifest["total"]]).encode()
-    prefix = base64.urlsafe_b64decode(manifest["iv"] + "=" * (-len(manifest["iv"]) % 4))
+    prefix = b64url_decode(manifest["iv"])
     return b64url(cipher.encrypt(chunk_iv(prefix, 0), b"", aad))
 
 
@@ -69,7 +80,8 @@ class UncertainFailure(Exception):
 
 class Discord:
     def __init__(self, token, channel_id):
-        self.path = f"{API}/channels/{channel_id}/messages"
+        self.channel = f"{API}/channels/{channel_id}"
+        self.path = f"{self.channel}/messages"
         self.session = requests.Session()
         self.session.headers.update({"Authorization": f"Bot {token}", "User-Agent": USER_AGENT})
 
@@ -93,6 +105,9 @@ class Discord:
                     data = {}
                 raise RuntimeError(f"Discord {response.status_code}: {data.get('message', response.reason)}")
             return None if response.status_code == 204 else response.json()
+
+    def channel_name(self):
+        return self.request("GET", self.channel).get("name") or ""
 
     def latest_messages(self):
         return self.request("GET", self.path, params={"limit": 100})
@@ -143,12 +158,12 @@ class Buffer:
         pass
 
 
-def upload_file(path, discord):
+def upload_file(path, discord, open_channel=False):
     """Sends one file and returns its file token."""
     path = Path(path)
     size = path.stat().st_size
     sha = secrets.token_hex(ID_BYTES)
-    key = secrets.token_bytes(32)
+    key = b64url_decode(OPEN_MASTER_KEY) if open_channel else secrets.token_bytes(32)
     cipher = AESGCM(key)
     prefix = secrets.token_bytes(8)
     sent_ids = []
@@ -230,15 +245,24 @@ def main():
     path = Path(sys.argv[1])
     if not path.is_file():
         sys.exit(f"{path} is not a file.")
+    discord = Discord(token, channel_id)
     try:
-        file_token = upload_file(path, Discord(token, channel_id))
+        # The channel's name decides whether it is open, as in the extension.
+        name = discord.channel_name()
+        open_channel = name.startswith(OPEN_PREFIX)
+        if open_channel:
+            print(f"#{name} is an open channel: anyone with this bot and OverShare can download the file.", file=sys.stderr)
+        file_token = upload_file(path, discord, open_channel)
     except KeyboardInterrupt:
         sys.exit("Upload canceled.")
     except Exception as error:
         sys.exit(f"Send failed: {error}")
-    save_token(file_token)
-    print(file_token)
-    print(f"Sent {path.name}. Token saved to {TOKENS_FILE.name}.", file=sys.stderr)
+    if open_channel:
+        print(f"Sent {path.name} to the open channel; it is listed there without a token.", file=sys.stderr)
+    else:
+        save_token(file_token)
+        print(file_token)
+        print(f"Sent {path.name}. Token saved to {TOKENS_FILE.name}.", file=sys.stderr)
 
 
 if __name__ == "__main__":

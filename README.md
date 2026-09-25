@@ -83,7 +83,7 @@ pip install requests cryptography
 BOT_TOKEN=... CHANNEL_ID=... python upload.py file.mp4
 ```
 
-It prints the file token and adds it to `overshare-tokens.json` next to the script. Load that file with **Import Tokens**, or paste the single token into the Download tab, while the configuration with the same bot and channel is selected. Keep the tokens file private.
+It prints the file token and adds it to `overshare-tokens.json` next to the script. Load that file with **Import Tokens**, or paste the single token into the Download tab, while the configuration with the same bot and channel is selected. Keep the tokens file private. To an open channel (its name starts with `open_`) it sends with the shared key instead, saves no token, and the file shows up in the Download list for everyone.
 
 ## Security
 
