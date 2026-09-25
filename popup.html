@@ -62,7 +62,8 @@
     }
     .iconbtn:hover { opacity: 1; }
     .iconbtn.active { opacity: 1; filter: drop-shadow(0 0 4px var(--accent)); }
-    /* The settings gear spins forward when Settings opens and back when it closes */
+    /* The settings gear spins forward when Settings opens and back when it closes.
+       popup.js times its clicks from this duration, angle and easing (SPIN_*). */
     #settingsBtn { display: inline-block; }
     #settingsBtn.spin-open { animation: gear-open 0.9s cubic-bezier(0.2, 0.8, 0.2, 1); }
     #settingsBtn.spin-close { animation: gear-close 0.9s cubic-bezier(0.2, 0.8, 0.2, 1); }

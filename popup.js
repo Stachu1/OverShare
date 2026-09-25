@@ -181,10 +181,25 @@ function playSound(name) {
   if (name === "send") { playTone(523, 0.1); playTone(659, 0.1, 0.09); playTone(784, 0.14, 0.18); }
   if (name === "download") { playTone(784, 0.1); playTone(523, 0.16, 0.1); }
 }
+// Ratchet clicks for the settings gear's spin: one per SPIN_TOOTH_DEG of turn, timed
+// along the spin's easing curve (gear-open in popup.html), so they come fast while it
+// spins fast and slow down as it stops.
+const SPIN_SECONDS = 0.9, SPIN_DEG = 1080, SPIN_TOOTH_DEG = 45, SPIN_EASING = [0.2, 0.8, 0.2, 1];
+const spinClickTimes = (() => {
+  const [x1, y1, x2, y2] = SPIN_EASING;
+  const bezier = (s, a, b) => 3 * a * s * (1 - s) ** 2 + 3 * b * s * s * (1 - s) + s ** 3;
+  const teeth = SPIN_DEG / SPIN_TOOTH_DEG, times = [];
+  for (let step = 1, next = 1; step <= 2000 && next <= teeth; step++) {
+    const s = step / 2000;
+    while (next <= teeth && bezier(s, y1, y2) * teeth >= next - 1e-9) { times.push(bezier(s, x1, x2) * SPIN_SECONDS); next++; }
+  }
+  return times;
+})();
+function playSpinClicks() { spinClickTimes.forEach((time, tooth) => playTone(tooth % 2 ? 1900 : 2300, 0.012, time)); }
 let hoveredButton = null;
 document.addEventListener("mouseover", (event) => { const button = event.target.closest("button"); if (button && button !== hoveredButton) { hoveredButton = button; playSound("hover"); } });
 document.addEventListener("mouseout", (event) => { if (!event.relatedTarget?.closest?.("button")) hoveredButton = null; });
-document.addEventListener("click", (event) => { const button = event.target.closest("button"); if (button && button !== els.mute) playSound("click"); }, true);
+document.addEventListener("click", (event) => { const button = event.target.closest("button"); if (button && button !== els.mute && button !== els.settingsBtn) playSound("click"); }, true);
 
 let botState = "checking";
 // The header dot, the status line and the "In use" label of the configuration list follow the bot check.
@@ -612,6 +627,7 @@ els.settingsBtn.addEventListener("click", () => {
   const opening = currentTab !== "settings";
   els.settingsBtn.classList.remove("spin-open", "spin-close");
   replayAnimation(els.settingsBtn, opening ? "spin-open" : "spin-close");
+  playSpinClicks();
   showTab(opening ? "settings" : lastMainTab);
 });
 
