@@ -3,5 +3,6 @@
 *.temp
 *.swp
 *.swo
+*.pem
 _metadata/
 overshare-tokens.json
