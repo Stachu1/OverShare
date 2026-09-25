@@ -1,7 +1,8 @@
 "use strict";
 
 const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "update", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "botStatus", "botDot", "flyer", "tabs", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute", "tooltip", "clearPick",
-  "settingsBtn", "settingsPanel", "configLabel", "configList", "configDrop", "newConfig", "importConfigFile", "configForm", "configFormTitle", "configName", "configToken", "configChannel", "cancelConfig", "saveConfig"];
+  "settingsBtn", "settingsPanel", "configLabel", "configList", "configDrop", "newConfig", "importConfigFile", "configForm", "configFormTitle", "configName", "configToken", "configChannel", "cancelConfig", "saveConfig",
+  "dialog", "dialogMessage", "dialogOk", "dialogCancel"];
 const els = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 let selection = null;
 let payload = null;
@@ -62,11 +63,35 @@ setInterval(checkForUpdate, UPDATE_CHECK_MS);
 els.update.addEventListener("click", async (event) => {
   event.preventDefault();
   if (configs.length) {
-    if (!confirm(`The new version may start with empty storage.\n\nDownload your ${configs.length} configuration file(s) now? Import them again after the update. The update downloads right after.`)) return;
+    if (!await askConfirm(`The new version may start with empty storage.\n\nDownload your ${configs.length} configuration file(s) now? Import them again after the update. The update downloads right after.`)) return;
     for (const item of configs) await exportConfig(item);
   }
   location.href = els.update.href;
 });
+// Asks in an overlay over the whole popup instead of the browser's own dialog.
+// Resolves true for OK and false for Cancel or Escape; cancel: null shows OK alone.
+function askConfirm(message, { ok = "OK", cancel = "Cancel" } = {}) {
+  const behind = [...document.body.children].filter((element) => element !== els.dialog);
+  els.dialogMessage.textContent = message;
+  els.dialogOk.textContent = ok;
+  els.dialogCancel.textContent = cancel || "";
+  els.dialogCancel.hidden = !cancel;
+  els.tooltip.classList.remove("show");
+  for (const element of behind) element.inert = true;
+  els.dialog.hidden = false;
+  els.dialogOk.focus();
+  return new Promise((resolve) => {
+    const close = (answer) => {
+      els.dialog.hidden = true;
+      for (const element of behind) element.inert = false;
+      els.dialogOk.onclick = els.dialogCancel.onclick = els.dialog.onkeydown = null;
+      resolve(answer);
+    };
+    els.dialogOk.onclick = () => close(true);
+    els.dialogCancel.onclick = () => close(false);
+    els.dialog.onkeydown = (event) => { if (event.key === "Escape") { event.preventDefault(); close(!cancel); } };
+  });
+}
 // Restarts a one-shot CSS animation class, even if it is still running.
 function replayAnimation(element, className) { element.classList.remove(className); void element.offsetWidth; element.classList.add(className); }
 function setStatus(message, kind = "info") {
@@ -495,7 +520,7 @@ async function copyFileToken(file, button) {
 }
 async function deleteFileToken(file) {
   if (!await storedKey(file.sha)) { setStatus("Delete failed: token is not stored locally.", "err"); return; }
-  if (!confirm(`Delete "${file.name}" from Discord and local storage? This cannot be undone.`)) return;
+  if (!await askConfirm(`Delete "${file.name}" from Discord and local storage? This cannot be undone.`)) return;
   try { requireConfig(); } catch (error) { setStatus("Delete failed: " + error.message, "err"); return; }
   startDelete([file.sha], file.name);
 }
@@ -675,7 +700,7 @@ els.importFile.addEventListener("change", async (event) => {
 els.deleteStorage.addEventListener("click", async () => {
   const tokens = await storedKeys();
   if (!tokens.length) { setStatus("No stored file tokens to delete.", "info"); return; }
-  if (!confirm(`Delete ${tokens.length} file token(s) and their Discord files? This cannot be undone.`)) return;
+  if (!await askConfirm(`Delete ${tokens.length} file token(s) and their Discord files? This cannot be undone.`)) return;
   try { requireConfig(); } catch (error) { setStatus("Delete failed: " + error.message, "err"); return; }
   els.downloadToken.value = "";
   startDelete([...shasFromKeys(tokens)], `${tokens.length} file(s)`);
@@ -742,7 +767,7 @@ async function findOrCreateChannel(token, name) {
   if (!guild) fail(guilds.length ? `The bot is in ${guilds.length} servers, so it can't tell where to create #${wanted}. Enter a channel ID instead.` : "The bot is not in any server yet; invite it to yours first.");
   const existing = (await request("GET", `/guilds/${guild.id}/channels`)).find((channel) => channel.type === 0 && channel.name === wanted);
   if (existing) return existing;
-  if (!confirm(`No channel #${wanted} exists in ${guild.name}. Create it?`)) return null;
+  if (!await askConfirm(`No channel #${wanted} exists in ${guild.name}. Create it?`)) return null;
   try {
     return await request("POST", `/guilds/${guild.id}/channels`, { name, type: 0, ...(parentId ? { parent_id: parentId } : {}) });
   } catch (error) {
@@ -783,7 +808,7 @@ els.configForm.addEventListener("submit", async (event) => {
       // Without a channel ID there is nothing to save.
       if (isName) { setStatus(error.channelSetup ? error.message : "Setting up the channel failed: " + error.message, "err"); els.saveConfig.disabled = false; return; }
       // A wrong token (401) is saved without asking; its red "In use" label shows the problem.
-      if (error.status !== 401 && !confirm(`Discord check failed: ${error.message}\n\nSave the configuration anyway?`)) { setStatus("Check failed: " + error.message, "err"); els.saveConfig.disabled = false; return; }
+      if (error.status !== 401 && !await askConfirm(`Discord check failed: ${error.message}\n\nSave the configuration anyway?`)) { setStatus("Check failed: " + error.message, "err"); els.saveConfig.disabled = false; return; }
     }
     els.saveConfig.disabled = false;
   }
@@ -834,7 +859,7 @@ async function deleteConfig(item) {
   if (busyWithConfig()) { setStatus("Wait for the running send, download or delete to finish.", "info"); return; }
   const data = await chrome.storage.local.get(null);
   const count = configTokens(data, item.id).length;
-  if (!confirm(`Delete the configuration ${item.name} and its ${count} file token(s) from this extension?\n\nIts files stay on Discord, but can't be downloaded without their tokens. Export the configuration first to keep them.`)) return;
+  if (!await askConfirm(`Delete the configuration ${item.name} and its ${count} file token(s) from this extension?\n\nIts files stay on Discord, but can't be downloaded without their tokens. Export the configuration first to keep them.`)) return;
   configs = configs.filter((other) => other.id !== item.id);
   if (editingId === item.id) openConfigForm(false);
   await chrome.storage.local.set({ configs });

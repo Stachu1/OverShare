@@ -224,6 +224,22 @@
     }
     .tooltip.show { opacity: 1; transform: none; }
 
+    /* In-popup confirmation: a dimmed overlay that blocks the page behind it */
+    .dialog {
+      position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center;
+      padding: 16px; background: rgba(0, 0, 0, 0.6); animation: dialog-in 0.16s ease-out;
+    }
+    .dialog[hidden] { display: none; }
+    .dialog .box { display: flex; flex-direction: column; gap: 14px; max-width: 300px; text-align: center; }
+    .dialog .message { font-size: 13px; line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere; }
+    .dialog .buttons { display: flex; gap: 10px; justify-content: center; }
+    .dialog button { min-width: 90px; padding: 8px 14px; border: none; border-radius: 8px; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.15s; }
+    .dialog .ok { background: var(--accent); }
+    .dialog .ok:hover { background: var(--accent-hover); }
+    .dialog .cancel { background: var(--err); }
+    .dialog .cancel:hover { background: #c93b3e; }
+    @keyframes dialog-in { from { opacity: 0; } }
+
     /* Controls locked during a send */
     input:disabled, textarea:disabled, select:disabled, button.mini:disabled { opacity: 0.5; cursor: not-allowed; }
     .drop.locked { opacity: 0.5; pointer-events: none; }
@@ -398,6 +414,13 @@
   </main>
   <div class="status-footer"><div class="status info" id="status"></div><span class="flyer" id="flyer" aria-hidden="true"></span></div>
   <div class="tooltip" id="tooltip" role="tooltip"></div>
+
+  <div class="dialog" id="dialog" role="alertdialog" aria-modal="true" aria-labelledby="dialogMessage" hidden>
+    <div class="box">
+      <div class="message" id="dialogMessage"></div>
+      <div class="buttons"><button class="cancel" id="dialogCancel">Cancel</button><button class="ok" id="dialogOk">OK</button></div>
+    </div>
+  </div>
 
   <script src="shared.js"></script>
   <script src="popup.js"></script>
