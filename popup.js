@@ -160,7 +160,7 @@ function applyUploadState(state) {
     resetUploadProgress();
     refreshSendState();
     if (state.idle) return;
-    if (state.outcome === "ok") { if (old.symmetricKey && old.configId === config.id) lastSentToken = `${old.sha}.${old.symmetricKey}`; playSound("send"); setStatus(`Sent ${state.name || old.name}: ${humanSize(state.size || 0)} (${humanSize(state.speed || 0)}/s) 🚀`, "ok"); launchFlyer("🚀", "fly"); }
+    if (state.outcome === "ok") { if (old.symmetricKey && old.configId === config.id) lastSentToken = `${old.sha}.${old.symmetricKey}`; playSound("send"); setStatus(`Sent ${state.name || old.name}: ${humanSize(state.size || 0)} (${humanSize(state.speed || 0)}/s)`, "ok"); launchFlyer("🚀", "fly"); }
     else setStatus(state.text || "Upload failed", state.failed ? "err" : "info");
   }
 }
