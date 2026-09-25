@@ -1,7 +1,7 @@
 "use strict";
 
 const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "botStatus", "botDot", "flyer", "tabs", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute", "tooltip", "clearPick",
-  "settingsBtn", "settingsPanel", "configLabel", "configSelect", "newConfig", "exportConfig", "importConfig", "deleteConfig", "importConfigFile", "configForm", "configName", "configToken", "configChannel", "cancelConfig", "saveConfig"];
+  "settingsBtn", "settingsPanel", "configLabel", "configList", "configDrop", "newConfig", "importConfigFile", "configForm", "configName", "configToken", "configChannel", "cancelConfig", "saveConfig"];
 const els = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 let selection = null;
 let payload = null;
@@ -203,12 +203,15 @@ async function checkBot() {
 }
 function requireConfig() { if (!config.id) throw new Error("add a configuration in Settings first"); }
 // name is "send", "download" or "settings".
+// Settings hides the tabs; closing it goes back to the tab that was open.
 function showTab(name) {
   currentTab = name;
-  if (name !== "settings") lastMainTab = name;
-  els.tabs.classList.toggle("download", name === "download");
-  els.tabs.classList.toggle("settings", name === "settings");
-  els.tabSend.classList.toggle("active", name === "send"); els.tabDownload.classList.toggle("active", name === "download");
+  els.tabs.hidden = name === "settings";
+  if (name !== "settings") {
+    lastMainTab = name;
+    els.tabs.classList.toggle("download", name === "download");
+    els.tabSend.classList.toggle("active", name === "send"); els.tabDownload.classList.toggle("active", name === "download");
+  }
   els.sendPanel.classList.toggle("active", name === "send"); els.downloadPanel.classList.toggle("active", name === "download");
   els.settingsPanel.classList.toggle("active", name === "settings"); els.settingsBtn.classList.toggle("active", name === "settings");
   if (name === "download") refreshFiles();
@@ -238,11 +241,29 @@ async function migrateLegacyStorage(data) {
   await chrome.storage.local.remove(["botToken", "channelId", "lastFileToken", "lastKey", ...legacyTokens]);
 }
 function renderConfigs() {
-  els.configSelect.textContent = "";
-  if (!configs.length) els.configSelect.add(new Option("No configurations yet", ""));
-  for (const item of configs) els.configSelect.add(new Option(item.name, item.id, false, item.id === config.id));
-  els.configSelect.disabled = !configs.length;
-  els.exportConfig.disabled = els.deleteConfig.disabled = !config.id;
+  els.configList.textContent = "";
+  if (!configs.length) els.configList.innerHTML = '<div class="empty">No configurations yet.</div>';
+  configs.forEach((item, position) => {
+    const current = item.id === config.id;
+    const row = document.createElement("div"); row.className = current ? "item config-item current" : "item config-item"; row.style.setProperty("--i", position);
+    if (!current) row.dataset.tip = "Use this configuration";
+    const meta = document.createElement("div"); meta.className = "meta";
+    const name = document.createElement("div"); name.className = "fname"; name.textContent = item.name;
+    const sub = document.createElement("div"); sub.className = "sub";
+    sub.innerHTML = `${current ? '<span class="in-use">In use</span> · ' : ""}Channel ${escapeHtml(item.channelId)}`;
+    meta.append(name, sub);
+    const actions = document.createElement("div"); actions.className = "secondary-actions";
+    const exportButton = document.createElement("button"); exportButton.className = "copy-token"; exportButton.textContent = "Export";
+    exportButton.dataset.tip = "Save this configuration, with its bot token, channel ID and file tokens, to a JSON file";
+    exportButton.addEventListener("click", (event) => { event.stopPropagation(); exportConfig(item); });
+    const deleteButton = document.createElement("button"); deleteButton.className = "delete-file"; deleteButton.textContent = "Delete";
+    deleteButton.dataset.tip = "Remove this configuration and its file tokens from the extension; its files stay on Discord";
+    deleteButton.addEventListener("click", (event) => { event.stopPropagation(); deleteConfig(item); });
+    actions.append(exportButton, deleteButton);
+    row.append(meta, actions);
+    if (!current) row.addEventListener("click", async () => { hideTip(); await selectConfig(item.id); setStatus(`Switched to ${item.name}.`, "ok"); });
+    els.configList.append(row);
+  });
   els.configLabel.textContent = config.id ? config.name : "Discord bot";
 }
 async function selectConfig(id) {
@@ -554,7 +575,6 @@ setInterval(() => { for (const when of els.fileList.querySelectorAll(".sent-at")
 els.tabSend.addEventListener("click", () => showTab("send")); els.tabDownload.addEventListener("click", () => showTab("download"));
 els.settingsBtn.addEventListener("click", () => showTab(currentTab === "settings" ? lastMainTab : "settings"));
 
-els.configSelect.addEventListener("change", async () => { await selectConfig(els.configSelect.value); setStatus(`Switched to ${config.name}.`, "ok"); });
 els.newConfig.addEventListener("click", () => openConfigForm(true));
 els.cancelConfig.addEventListener("click", () => openConfigForm(false));
 els.configForm.addEventListener("submit", async (event) => {
@@ -579,17 +599,13 @@ els.configForm.addEventListener("submit", async (event) => {
   setStatus(`Configuration ${name} added.`, "ok");
 });
 // A configuration export holds everything needed to use it elsewhere, bot token included.
-els.exportConfig.addEventListener("click", async () => {
-  if (!config.id) return;
-  const tokens = await storedKeys();
-  const safeName = config.name.replace(/[^\w-]+/g, "_");
-  downloadJson(`overshare-config-${safeName}.json`, { overshareConfig: 1, name: config.name, botToken: config.token, channelId: config.channelId, files: tokenFileEntries(tokens) });
-  setStatus(`${config.name} exported with ${tokens.length} file token(s). The file holds the bot token: keep it private.`, "ok");
-});
-els.importConfig.addEventListener("click", () => els.importConfigFile.click());
-els.importConfigFile.addEventListener("change", async (event) => {
-  const file = event.target.files[0];
-  if (!file) return;
+async function exportConfig(item) {
+  const tokens = configTokens(await chrome.storage.local.get(null), item.id);
+  const safeName = item.name.replace(/[^\w-]+/g, "_");
+  downloadJson(`overshare-config-${safeName}.json`, { overshareConfig: 1, name: item.name, botToken: item.token, channelId: item.channelId, files: tokenFileEntries(tokens) });
+  setStatus(`${item.name} exported with ${tokens.length} file token(s). The file holds the bot token: keep it private.`, "ok");
+}
+async function importConfig(file) {
   try {
     const data = JSON.parse(await file.text());
     if (data?.overshareConfig !== 1 || typeof data.botToken !== "string" || !/^\d+$/.test(String(data.channelId || ""))) throw new Error("not an OverShare configuration export");
@@ -602,21 +618,32 @@ els.importConfigFile.addEventListener("change", async (event) => {
     await selectConfig(id);
     setStatus(existing ? `Added ${pairs.length} file token(s) to ${config.name}, which has the same bot and channel.` : `Configuration ${config.name} imported with ${pairs.length} file token(s).`, "ok");
   } catch (error) { setStatus("Import failed: " + error.message, "err"); }
+}
+els.configDrop.addEventListener("click", () => els.importConfigFile.click());
+els.importConfigFile.addEventListener("change", async (event) => {
+  const file = event.target.files[0];
   event.target.value = "";
+  if (file) importConfig(file);
 });
-els.deleteConfig.addEventListener("click", async () => {
-  if (!config.id) return;
+els.configDrop.addEventListener("dragover", (event) => { event.preventDefault(); els.configDrop.classList.add("drag"); });
+els.configDrop.addEventListener("dragleave", () => els.configDrop.classList.remove("drag"));
+els.configDrop.addEventListener("drop", (event) => {
+  event.preventDefault(); els.configDrop.classList.remove("drag");
+  const file = event.dataTransfer.files[0];
+  if (file) importConfig(file);
+});
+async function deleteConfig(item) {
   if (busyWithConfig()) { setStatus("Wait for the running send, download or delete to finish.", "info"); return; }
-  const tokens = await storedKeys();
-  if (!confirm(`Delete the configuration ${config.name} and its ${tokens.length} file token(s) from this extension?\n\nIts files stay on Discord, but can't be downloaded without their tokens. Export the configuration first to keep them.`)) return;
-  const { id, name } = config;
   const data = await chrome.storage.local.get(null);
-  configs = configs.filter((item) => item.id !== id);
+  const count = configTokens(data, item.id).length;
+  if (!confirm(`Delete the configuration ${item.name} and its ${count} file token(s) from this extension?\n\nIts files stay on Discord, but can't be downloaded without their tokens. Export the configuration first to keep them.`)) return;
+  configs = configs.filter((other) => other.id !== item.id);
   await chrome.storage.local.set({ configs });
-  await chrome.storage.local.remove(Object.keys(data).filter((key) => key.startsWith(`${id}:`)));
-  await selectConfig(configs[0]?.id || "");
-  setStatus(`Configuration ${name} deleted.`, "ok");
-});
+  await chrome.storage.local.remove(Object.keys(data).filter((key) => key.startsWith(`${item.id}:`)));
+  if (item.id === config.id) await selectConfig(configs[0]?.id || "");
+  else renderConfigs();
+  setStatus(`Configuration ${item.name} deleted.`, "ok");
+}
 const transferChannel = new BroadcastChannel("overshare");
 transferChannel.onmessage = (event) => {
   const message = event.data || {};
