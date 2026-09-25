@@ -433,8 +433,9 @@ function renderConfigs() {
     const meta = document.createElement("div"); meta.className = "meta";
     const name = document.createElement("div"); name.className = "fname"; name.textContent = item.name;
     const sub = document.createElement("div"); sub.className = "sub";
-    sub.innerHTML = `${current ? `<span class="in-use ${botState}" title="${escapeHtml(els.botStatus.textContent)}">In use</span> · ` : ""}Channel ${escapeHtml(item.channelId)}${item.open ? ' · <span class="open-tag">Open</span>' : ""}`;
-    meta.append(name, sub);
+    sub.innerHTML = [current && `<span class="in-use ${botState}" title="${escapeHtml(els.botStatus.textContent)}">In use</span>`, item.open && '<span class="open-tag">Open</span>'].filter(Boolean).join(" · ");
+    meta.append(name);
+    if (sub.innerHTML) meta.append(sub);
     const actions = document.createElement("div"); actions.className = "secondary-actions";
     const editButton = document.createElement("button"); editButton.className = "copy-token"; editButton.textContent = "Edit";
     editButton.dataset.tip = "Change this configuration's name, bot token or channel ID";
