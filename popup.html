@@ -340,6 +340,17 @@
     .open-tag { color: var(--warn); font-weight: 600; }
     .check { display: flex; align-items: center; gap: 7px; margin: 0; cursor: pointer; }
     .check input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+    .check:has(input:disabled) { cursor: not-allowed; }
+    .check input:disabled { cursor: not-allowed; }
+    /* A faint icon button inside the right end of a text box */
+    .field-with-button { position: relative; }
+    .field-with-button input { padding-right: 34px; }
+    .field-copy {
+      position: absolute; top: 3px; bottom: 3px; right: 3px; display: flex; align-items: center; padding: 0 7px;
+      background: none; border: none; border-radius: 6px; color: var(--text); opacity: 0.35; cursor: pointer; transition: opacity 0.15s;
+    }
+    .field-copy:hover { opacity: 0.85; }
+    .field-copy[hidden] { display: none; }
     .empty { text-align: center; color: var(--muted); font-size: 12px; padding: 24px 0; }
   </style>
 </head>
@@ -410,9 +421,9 @@
       <form class="config-form" id="configForm" hidden autocomplete="off">
         <div class="form-title" id="configFormTitle">New configuration</div>
         <div><label for="configName">Configuration name</label><input type="text" id="configName" placeholder="e.g. Minecraft world saves" maxlength="40" /></div>
-        <div><label for="configToken">Discord bot token</label><input type="password" id="configToken" placeholder="Bot token" /></div>
+        <div><label for="configToken">Discord bot token</label><div class="field-with-button"><input type="password" id="configToken" placeholder="Bot token" /><button type="button" class="field-copy" id="copyBotToken" hidden aria-label="Copy the bot token" data-tip="Copy the bot token"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg></button></div></div>
         <div><label for="configChannel">Discord channel ID, or a name for a new channel</label><input type="text" id="configChannel" placeholder="Channel ID or e.g. documents" /></div>
-        <label class="check" data-tip="Adds open_ to the channel name. Files in an open channel use OverShare's shared key, so anyone with this bot and OverShare can see and download them without file tokens"><input type="checkbox" id="configOpen" /> Open: share its files with everyone who has this bot</label>
+        <label class="check" data-tip="Creates the new channel as open_&lt;name&gt;. Files in an open channel use OverShare's shared key, so anyone with this bot and OverShare can see and download them without file tokens. Only a new channel can be made open, so enter a name, not an ID"><input type="checkbox" id="configOpen" /> Open channel: shared with everyone</label>
         <div class="row">
           <button type="button" class="mini" id="cancelConfig">Cancel</button>
           <button type="submit" class="mini primary" id="saveConfig" data-tip="Check the bot, create the channel if a name was given, and save the configuration">Save</button>

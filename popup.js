@@ -1,7 +1,7 @@
 "use strict";
 
 const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "update", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "botStatus", "botDot", "flyer", "tabs", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute", "tooltip", "clearPick",
-  "settingsBtn", "settingsPanel", "configLabel", "configList", "configDrop", "newConfig", "importConfigFile", "configForm", "configFormTitle", "configName", "configToken", "configChannel", "configOpen", "cancelConfig", "saveConfig",
+  "settingsBtn", "settingsPanel", "configLabel", "configList", "configDrop", "newConfig", "importConfigFile", "configForm", "configFormTitle", "configName", "configToken", "configChannel", "configOpen", "copyBotToken", "cancelConfig", "saveConfig",
   "dialog", "dialogMessage", "dialogOk", "dialogCancel"];
 const els = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 let selection = null;
@@ -388,6 +388,7 @@ async function restoreViewState() {
   if (view?.form) {
     els.configName.value = view.form.name || ""; els.configToken.value = view.form.token || ""; els.configChannel.value = view.form.channelId || "";
     els.configOpen.checked = !!view.form.open;
+    updateOpenBox();
     saveViewState();
   }
 }
@@ -487,9 +488,19 @@ function openConfigForm(open, item = null) {
     els.configName.value = item ? item.name : configs.length ? "" : "Default";
     els.configToken.value = item?.token || ""; els.configChannel.value = item?.channelId || "";
     els.configOpen.checked = !!item?.open;
+    updateOpenBox();
+    els.copyBotToken.hidden = !item;
     (item || configs.length ? els.configName : els.configToken).focus();
   }
   saveViewState();
+}
+// Only a new channel can be made open: marking an existing one would hand its files to
+// everyone with the bot, against the wishes of whoever keeps it private. An ID names an
+// existing channel, so the box is locked then and shows whether that channel is open.
+function updateOpenBox() {
+  const channelInput = els.configChannel.value.trim(), isId = /^\d+$/.test(channelInput);
+  if (isId) { const edited = configs.find((item) => item.id === editingId); els.configOpen.checked = !!edited?.open && edited.channelId === channelInput; }
+  els.configOpen.disabled = isId;
 }
 function updateItemButtons() {
   for (const [sha, { file, downloadButton, deleteButton }] of itemControls) {
@@ -780,7 +791,16 @@ els.settingsBtn.addEventListener("click", (event) => { if (event.detail === 0) t
 els.newConfig.addEventListener("click", () => openConfigForm(true));
 els.cancelConfig.addEventListener("click", () => openConfigForm(false));
 for (const field of [els.configName, els.configToken, els.configChannel]) field.addEventListener("input", saveViewState);
+els.configChannel.addEventListener("input", updateOpenBox);
 els.configOpen.addEventListener("change", saveViewState);
+els.copyBotToken.addEventListener("click", async () => {
+  const token = els.configToken.value.trim();
+  if (!token) { setStatus("There is no bot token to copy.", "info"); return; }
+  if (!await askConfirm("The bot token gives full control of the bot: whoever has it can read, send and delete everything the bot can reach.\n\nShare it only with people you trust.", { ok: "Copy", danger: true })) return;
+  await navigator.clipboard.writeText(token);
+  replayAnimation(els.copyBotToken, "copied");
+  setStatus("Bot token copied. Keep it private.", "warn");
+});
 // Finds the text channel called name in the bot's server, or creates it after
 // asking. The server is the one of another configuration with the same bot, and
 // the new channel goes in that channel's category; otherwise the bot must be in
@@ -839,15 +859,13 @@ els.configForm.addEventListener("submit", async (event) => {
         if (!created) { setStatus("No channel was created.", "info"); els.saveConfig.disabled = false; return; }
         channelId = created.id;
         open = isOpenChannelName(created.name);
-      } else if (wantOpen && !open) {
-        setStatus(`That channel's name doesn't start with ${OPEN_PREFIX}, so it isn't open. Rename it in Discord, or enter a name for a new open channel.`, "err");
-        els.saveConfig.disabled = false; return;
       }
     } catch (error) {
       // Without a channel ID there is nothing to save.
       if (isName) { setStatus(error.channelSetup ? error.message : "Setting up the channel failed: " + error.message, "err"); els.saveConfig.disabled = false; return; }
       // A wrong token (401) is saved without asking; its red "In use" label shows the problem.
-      // The channel couldn't be read, so the checkbox is trusted until the bot check can read its name.
+      // The channel couldn't be read, so it keeps what the locked box shows (the saved state of
+      // the same channel, else not open) until the bot check can read its name.
       open = wantOpen;
       if (error.status !== 401 && !await askConfirm(`Discord check failed: ${error.message}\n\nSave the configuration anyway?`, { ok: "Save anyway" })) { setStatus("Check failed: " + error.message, "err"); els.saveConfig.disabled = false; return; }
     }
