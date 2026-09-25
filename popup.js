@@ -168,16 +168,17 @@ function audio() {
 }
 try { audio(); } catch (_) {}
 document.addEventListener("pointerdown", () => { try { audio(); } catch (_) {} }, true);
-function playTone(frequency, duration, delay = 0) {
+function playTone(frequency, duration, delay = 0, { type = "sine", volume = 0.04 } = {}) {
   if (muted) return;
   try {
     audio();
     const start = audioContext.currentTime + delay;
     const oscillator = audioContext.createOscillator();
     const gain = audioContext.createGain();
+    oscillator.type = type;
     oscillator.frequency.value = frequency;
     gain.gain.setValueAtTime(0.0001, start);
-    gain.gain.linearRampToValueAtTime(0.04, start + 0.01);
+    gain.gain.linearRampToValueAtTime(volume, start + 0.01);
     gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
     oscillator.connect(gain).connect(audioContext.destination);
     oscillator.start(start);
@@ -190,7 +191,8 @@ function playSound(name) {
   if (name === "send") { playTone(523, 0.1); playTone(659, 0.1, 0.09); playTone(784, 0.14, 0.18); }
   if (name === "download") { playTone(784, 0.1); playTone(523, 0.16, 0.1); }
   if (name === "connected") { playTone(880, 0.08); playTone(1175, 0.16, 0.08); }
-  if (name === "failed") { playTone(392, 0.12); playTone(262, 0.24, 0.11); }
+  // A buzzy sawtooth, louder than the other sounds, so a failure is hard to miss.
+  if (name === "failed") { const buzz = { type: "sawtooth", volume: 0.09 }; playTone(311, 0.13, 0, buzz); playTone(208, 0.3, 0.14, buzz); }
 }
 // Ratchet clicks for the settings gear's spin: one per SPIN_TOOTH_DEG of turn, timed
 // along the spin's easing curve (gear-open in popup.html), so they come fast while it
