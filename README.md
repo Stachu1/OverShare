@@ -65,6 +65,17 @@ Enable **Developer Mode** in Discord, then right-click your transfer channel and
 - **Export / Import Tokens:** Back up your file tokens as JSON.
 - **Delete:** Removes the transfer from Discord and removes its local token.
 
+### Sending from the command line
+
+`upload.py` sends a file the same way the extension does, without a browser:
+
+```sh
+pip install requests cryptography
+BOT_TOKEN=... CHANNEL_ID=... python upload.py file.mp4
+```
+
+It prints the file token and adds it to `overshare-tokens.json` next to the script. Load that file with **Import Tokens**, or paste the single token into the Download tab, while the configuration with the same bot and channel is selected. Keep the tokens file private.
+
 ## Security
 
 There are two important secrets:
@@ -106,6 +117,7 @@ Important security considerations:
 | `background.js` | Service worker and background tasks |
 | `shared.js` | Discord API, transfer, and decryption utilities |
 | `fflate.js` | ZIP/compression library |
+| `upload.py` | Command-line sender, same format as the extension |
 
 ## Disclaimer
 
