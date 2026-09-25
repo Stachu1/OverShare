@@ -24,7 +24,12 @@ let editingId = null; // the configuration the form is editing, or null for a ne
 els.version.textContent = "v" + chrome.runtime.getManifest().version;
 // An unpacked copy has no commit SHA of its own, but every commit bumps the manifest version,
 // so the version on GitHub's main branch tells whether a newer commit is out.
-const REMOTE_MANIFEST = "https://raw.githubusercontent.com/Stachu1/OverShare/main/manifest.json";
+// The API answers with the pushed file at once; raw.githubusercontent.com can lag up to 5 minutes
+// behind a push, but has no rate limit, so it covers for the API's 60 requests an hour.
+const REMOTE_MANIFESTS = [
+  ["https://api.github.com/repos/Stachu1/OverShare/contents/manifest.json?ref=main", { Accept: "application/vnd.github.raw" }],
+  ["https://raw.githubusercontent.com/Stachu1/OverShare/main/manifest.json", {}],
+];
 const UPDATE_CHECK_MS = 60 * 60 * 1000;
 function newerVersion(remote, local) {
   const a = remote.split(".").map(Number), b = local.split(".").map(Number);
@@ -38,14 +43,17 @@ function showUpdate(remoteVersion) {
 async function checkForUpdate() {
   const { remoteVersion } = await chrome.storage.local.get("remoteVersion").catch(() => ({}));
   showUpdate(remoteVersion);
-  try {
-    const response = await fetch(REMOTE_MANIFEST, { cache: "no-store" });
-    if (!response.ok) return;
-    const { version } = await response.json();
-    if (typeof version !== "string") return;
-    showUpdate(version);
-    await chrome.storage.local.set({ remoteVersion: version });
-  } catch {} // offline or GitHub unreachable: keep the last known result
+  for (const [url, headers] of REMOTE_MANIFESTS) {
+    try {
+      const response = await fetch(url, { cache: "no-store", headers });
+      if (!response.ok) continue;
+      const { version } = await response.json();
+      if (typeof version !== "string") continue;
+      showUpdate(version);
+      await chrome.storage.local.set({ remoteVersion: version });
+      return;
+    } catch {} // offline or GitHub unreachable: keep the last known result
+  }
 }
 checkForUpdate();
 setInterval(checkForUpdate, UPDATE_CHECK_MS);
