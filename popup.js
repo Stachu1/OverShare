@@ -609,12 +609,17 @@ async function loadMoreFiles() {
   listLoading = true;
   listFooter.textContent = "Searching Discord…";
   try {
-    const files = await scanner.next(LIST_PAGE);
-    if (run !== listRun) return;
-    files.forEach((file, position) => els.fileList.insertBefore(fileRow(file, position), listFooter));
-    shownFiles += files.length;
-    incompleteFiles += files.filter((file) => !file.available).length;
-    updateItemButtons();
+    let loaded = 0;
+    while (loaded < LIST_PAGE && !scanner.done) {
+      const [file] = await scanner.next(1);
+      if (run !== listRun) return;
+      if (!file) break;
+      els.fileList.insertBefore(fileRow(file, shownFiles), listFooter);
+      shownFiles++;
+      if (!file.available) incompleteFiles++;
+      loaded++;
+      updateItemButtons();
+    }
   } catch (error) {
     if (run !== listRun) return;
     scanner = null;
