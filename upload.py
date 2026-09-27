@@ -67,11 +67,11 @@ def js_json(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def manifest_tag(manifest, cipher):
-    aad = js_json(["OVERSHARE-MANIFEST", manifest["sha"], manifest["name"], manifest["kind"],
+def manifest_tag(manifest, cipher, name):
+    aad = js_json(["OVERSHARE-MANIFEST", manifest["sha"], name, manifest["kind"],
                    manifest["originalSize"], manifest["encryptedSize"], manifest["total"]]).encode()
     prefix = b64url_decode(manifest["iv"])
-    return b64url(cipher.encrypt(chunk_iv(prefix, 0), b"", aad))
+    return b64url(cipher.encrypt(chunk_iv(prefix, 0xffffffff), b"", aad))
 
 
 class UncertainFailure(Exception):
@@ -208,9 +208,11 @@ def upload_file(path, discord, open_channel=False):
         drain(buffer)
         send_piece(buffer.data, True)
 
-        manifest = {"v": 3, "sha": sha, "name": path.name, "kind": "file", "originalSize": size,
+        manifest = {"v": 4, "sha": sha, "name": path.name, "kind": "file", "originalSize": size,
                     "encryptedSize": state["encrypted"], "total": state["index"], "iv": b64url(prefix), "firstId": sent_ids[0]}
-        manifest["tag"] = manifest_tag(manifest, cipher)
+        manifest["title"] = b64url(cipher.encrypt(chunk_iv(prefix, 0), path.name.encode(), b""))
+        manifest["tag"] = manifest_tag(manifest, cipher, path.name)
+        del manifest["name"]
         content = MANIFEST_MARKER + js_json(manifest)
         send_checked(discord, "the file manifest", lambda: discord.send_message(content), lambda m: m.get("content") == content)
     except BaseException:

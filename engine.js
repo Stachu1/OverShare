@@ -220,8 +220,10 @@ async function uploadFiles(job) {
 		await uploading;
 		if (uploadError) throw uploadError;
 		throwIfCanceled();
-		const manifest = { v: 3, sha, name, kind: metadata.kind, originalSize, encryptedSize, total: index, iv: base64urlEncode(prefix), firstId };
+		const manifest = { v: 4, sha, name, kind: metadata.kind, originalSize, encryptedSize, total: index, iv: base64urlEncode(prefix), firstId };
+		manifest.title = await encryptManifestTitle(manifest, key);
 		manifest.tag = await manifestTag(manifest, key);
+		delete manifest.name;
 		const content = MANIFEST_MARKER + JSON.stringify(manifest);
 		await sendChecked(config, "the file manifest",
 			() => discordRequest(config, "POST", path, { json: { content }, signal: abortController.signal }),

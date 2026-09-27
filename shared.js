@@ -25,25 +25,41 @@ function chunkAad(sha, index, final) { return new TextEncoder().encode(`OVERSHAR
 // no manifest tag.
 const ID_BYTES = 8;
 const LEGACY_ID_LENGTH = 64;
-// The manifest's tag is an AES-GCM tag, made with the file key, over the details a
-// download relies on, so a manifest with a changed name, size or chunk count is
-// refused. It uses IV number 0, which no chunk uses.
+// The manifest title is encrypted with the file key. v4 uses IV number 0 for
+// the title and the largest IV number for its integrity tag; neither is used
+// by a chunk. v3 keeps its old plaintext title and tag format.
 function manifestAad(manifest) {
   return new TextEncoder().encode(JSON.stringify(["OVERSHARE-MANIFEST", manifest.sha, manifest.name, manifest.kind, manifest.originalSize, manifest.encryptedSize, manifest.total]));
 }
+async function encryptManifestTitle(manifest, key) {
+  const title = new TextEncoder().encode(manifest.name);
+  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv: chunkIv(base64urlDecode(manifest.iv), 0) }, key, title);
+  return base64urlEncode(new Uint8Array(encrypted));
+}
+async function decryptManifestTitle(manifest, key) {
+  const title = await crypto.subtle.decrypt({ name: "AES-GCM", iv: chunkIv(base64urlDecode(manifest.iv), 0) }, key, base64urlDecode(manifest.title));
+  return new TextDecoder().decode(title);
+}
 async function manifestTag(manifest, key) {
-  const tag = await crypto.subtle.encrypt({ name: "AES-GCM", iv: chunkIv(base64urlDecode(manifest.iv), 0), additionalData: manifestAad(manifest) }, key, new Uint8Array(0));
+  const index = manifest.v >= 4 ? 0xffffffff : 0;
+  const tag = await crypto.subtle.encrypt({ name: "AES-GCM", iv: chunkIv(base64urlDecode(manifest.iv), index), additionalData: manifestAad(manifest) }, key, new Uint8Array(0));
   return base64urlEncode(new Uint8Array(tag));
 }
 async function verifyManifest(manifest, key) {
   const failed = new Error("the file's details failed their integrity check (wrong file token, or the manifest was changed)");
   if (!manifest.tag) { if (manifest.sha.length === LEGACY_ID_LENGTH) return; throw failed; }
   try {
-    await crypto.subtle.decrypt({ name: "AES-GCM", iv: chunkIv(base64urlDecode(manifest.iv), 0), additionalData: manifestAad(manifest) }, key, base64urlDecode(manifest.tag));
+    const index = manifest.v >= 4 ? 0xffffffff : 0;
+    await crypto.subtle.decrypt({ name: "AES-GCM", iv: chunkIv(base64urlDecode(manifest.iv), index), additionalData: manifestAad(manifest) }, key, base64urlDecode(manifest.tag));
   } catch (error) {
     if (error.name === "OperationError") throw failed;
     throw error;
   }
+}
+async function openManifest(manifest, key) {
+  const opened = manifest.v >= 4 ? { ...manifest, name: await decryptManifestTitle(manifest, key) } : manifest;
+  await verifyManifest(opened, key);
+  return opened;
 }
 // Each configuration (a bot token and channel) keeps its own file tokens, stored
 // as "<config id>:<transfer id>.symmetricKey", and the token of its latest send
@@ -68,7 +84,7 @@ let openKey = null;
 async function opensWithOpenKey(manifest) {
   if (!manifest.tag) return false;
   openKey ??= importChunkKey(OPEN_MASTER_KEY, "decrypt");
-  try { await verifyManifest(manifest, await openKey); return true; } catch (_) { return false; }
+  try { await openManifest(manifest, await openKey); return true; } catch (_) { return false; }
 }
 function importChunkKey(encodedKey, usage) { return crypto.subtle.importKey("raw", base64urlDecode(encodedKey), "AES-GCM", false, [usage]); }
 // Popup <-> engine messages. A BroadcastChannel (unlike chrome.runtime
@@ -201,6 +217,7 @@ class TransferScanner {
   constructor(config, keys) {
     this.config = config;
     this.wanted = keys ? shasFromKeys(keys) : null; // null takes every transfer
+    this.keys = new Map((keys || []).map((key) => [key.split(".", 1)[0], key.split(".", 2)[1]]));
     this.queue = []; // { manifest, sentAt } with a manifest found, newest first, not handed out yet
     this.parts = {}; // sha -> { chunk number: { url, size } }
     this.seen = new Set(); // shas whose manifest was found
@@ -219,9 +236,13 @@ class TransferScanner {
       if (content.startsWith(MANIFEST_MARKER)) {
         let manifest = null;
         try { manifest = JSON.parse(content.split("\n", 1)[0].slice(MANIFEST_MARKER.length)); } catch (_) {}
-        if (manifest?.v === 3 && typeof manifest.sha === "string" && this.wants(manifest.sha) && !this.seen.has(manifest.sha) && !this.foreign.has(manifest.sha)) {
+        if ((manifest?.v === 3 || manifest?.v === 4) && typeof manifest.sha === "string" && this.wants(manifest.sha) && !this.seen.has(manifest.sha) && !this.foreign.has(manifest.sha)) {
           // A file sent to an open channel with a key of its own can't be opened here, so it isn't listed.
           if (!this.wanted && !await opensWithOpenKey(manifest)) { this.foreign.add(manifest.sha); continue; }
+          try {
+            const key = this.wanted ? await importChunkKey(this.keys.get(manifest.sha), "decrypt") : await openKey;
+            manifest = await openManifest(manifest, key);
+          } catch (_) { this.foreign.add(manifest.sha); continue; }
           this.seen.add(manifest.sha);
           this.queue.push({ manifest, sentAt: Date.parse(message.timestamp) || 0 });
         }
