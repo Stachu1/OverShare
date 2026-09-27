@@ -156,12 +156,16 @@ function clearSelection() {
   els.drop.classList.remove("has-file");
   els.dropLabel.textContent = "Click for a file, or drop a file / folder";
 }
+function clearSelectionData() {
+  selection = null; payload = null;
+  els.file.value = ""; els.folder.value = "";
+}
 function refreshSendState() {
   if (activeUpload) {
     els.send.disabled = !!activeUpload.canceling;
-    els.send.textContent = activeUpload.canceling ? "Canceling…" : "Cancel";
-    els.send.classList.add("cancel");
-    els.send.dataset.tip = "Stop the upload and remove the chunks already sent";
+    els.send.textContent = activeUpload.paused ? "Resume" : activeUpload.canceling ? "Canceling…" : "Cancel";
+    els.send.classList.toggle("cancel", !activeUpload.paused);
+    els.send.dataset.tip = activeUpload.paused ? "Resume the paused upload" : "Stop the upload and remove the chunks already sent";
     return;
   }
   els.send.classList.remove("cancel");
@@ -188,13 +192,11 @@ function applyUploadState(state) {
       ? Math.min(100, Math.round((state.bytesSent / state.totalBytes) * 100))
       : Math.min(100, Math.round(((state.sent || 0) / (state.total || 1)) * 100));
     els.bar.style.width = percent + "%";
-    // The chunk count is only known once compression ends, so until then it is the uncompressed upper bound.
-    const chunks = state.total || Math.max(1, Math.ceil((state.totalBytes || 0) / PLAIN_CHUNK_BYTES));
-    const chunkLabel = `${state.total ? "" : "~"}${chunks} chunk${chunks === 1 ? "" : "s"}`;
     if (state.cleaning) setStatus(`Removing sent chunks of ${state.name}…`, "info");
     else if (state.canceling) setStatus(`Canceling upload… ${percent}%`, "info");
-    else if (state.retrying) setStatus(`Chunk ${state.retrying.chunk} got no answer from Discord; resending (attempt ${state.retrying.attempt} of ${state.retrying.of}) · ${percent}%`, "info");
-    else setStatus(`Sending ${chunkLabel} · ${percent}% · ${transferStats(state)}`, "info");
+    else if (state.paused) setStatus("Upload paused after repeated errors. Resume when the connection is ready.", "warn");
+    else if (state.retrying) setStatus(`Chunk ${state.retrying.chunk} got no answer from Discord. (attempt ${state.retrying.attempt}/${state.retrying.of}) · ${percent}%`, "info");
+    else setStatus(`Sending ${state.name || ""} · ${percent}% · ${transferStats(state)}`, "info");
     refreshSendState();
   } else if (activeUpload || state.outcome === "interrupted") {
     // An idle reply can race a send this popup just started; only a restored upload should be cleared by it.
@@ -204,7 +206,7 @@ function applyUploadState(state) {
     resetUploadProgress();
     refreshSendState();
     if (state.idle) return;
-    if (state.outcome === "ok") { if (old.symmetricKey && old.configId === config.id) lastSentToken = `${old.sha}.${old.symmetricKey}`; playSound("send"); setStatus(`Sent ${state.name || old.name}${old.open ? " to the open channel" : ""}: ${humanSize(state.size || 0)} (${humanSize(state.speed || 0)}/s)`, "ok"); launchFlyer("🚀", "fly"); }
+    if (state.outcome === "ok") { clearSelection(); if (old.symmetricKey && old.configId === config.id) lastSentToken = `${old.sha}.${old.symmetricKey}`; playSound("send"); setStatus(`Sent ${state.name || old.name}${old.open ? " to the open channel" : ""}: ${humanSize(state.size || 0)} (${humanSize(state.speed || 0)}/s)`, "ok"); launchFlyer("🚀", "fly"); }
     else setStatus(state.text || "Upload failed", state.failed ? "err" : "info");
   }
 }
@@ -776,6 +778,12 @@ els.mute.addEventListener("click", () => {
 });
 els.send.addEventListener("click", async () => {
   if (activeUpload) {
+    if (activeUpload.paused) {
+      activeUpload.paused = false;
+      refreshSendState();
+      transferChannel.postMessage({ type: "resumeUpload" });
+      return;
+    }
     activeUpload.canceling = true;
     refreshSendState();
     transferChannel.postMessage({ type: "cancelUpload" });
@@ -791,7 +799,7 @@ els.send.addEventListener("click", async () => {
     transferChannel.postMessage({ type: "startUpload", job: { metadata, config, symmetricKey, files: payload.files } });
     activeUpload = { name: payload.name, sha: payload.sha, symmetricKey, configId: config.id, open: !!config.open, total: null, sent: 0 };
     // Each send gets a fresh ID and key, so the selection is used up.
-    clearSelection();
+    clearSelectionData();
     refreshSendState();
   } catch (error) { setStatus("Send failed: " + error.message, "err"); refreshSendState(); }
 });

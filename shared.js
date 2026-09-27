@@ -7,6 +7,8 @@
 const API = "https://discord.com/api/v10";
 const MANIFEST_MARKER = "OVERSHARE|";
 const CHUNK_BYTES = 20 * 1024 * 1024;
+const REQUEST_RETRY_ATTEMPTS = 5;
+const REQUEST_TIMEOUT_MS = 10000;
 
 // A transfer is one zip, streamed and cut into pieces that are each encrypted with
 // AES-GCM and uploaded as "<id>.<n>". The IV holds the piece number and the
@@ -164,10 +166,12 @@ async function discordUpload(config, path, form, { signal, onProgress } = {}) {
     const xhr = await new Promise((resolve, reject) => {
       const request = new XMLHttpRequest();
       request.open("POST", `${API}${path}`);
+      request.timeout = REQUEST_TIMEOUT_MS;
       request.setRequestHeader("Authorization", `Bot ${config.token}`);
       request.upload.onprogress = (event) => onProgress?.(event.loaded);
       request.onload = () => resolve(request);
       request.onerror = () => reject(Object.assign(new Error("Network error while uploading"), { network: true }));
+      request.ontimeout = () => reject(Object.assign(new Error("Upload timed out after 10 seconds"), { network: true }));
       request.onabort = () => reject(new DOMException("Upload canceled", "AbortError"));
       if (signal?.aborted) return reject(new DOMException("Upload canceled", "AbortError"));
       signal?.addEventListener("abort", () => request.abort(), { once: true });
@@ -330,7 +334,13 @@ async function* decryptChunks(item, encodedKey, onProgress) {
   for (let index = 1; index <= total; index++) {
     const part = item.parts[index];
     if (!part) throw new Error("not all chunks are available");
-    const response = await fetch(part.url);
+    let response;
+    for (let attempt = 1; ; attempt++) {
+      response = await fetch(part.url);
+      if (![502, 503, 504].includes(response.status)) break;
+      if (attempt >= REQUEST_RETRY_ATTEMPTS) throw new Error(`chunk ${index} download failed after ${REQUEST_RETRY_ATTEMPTS} attempts: HTTP ${response.status}`);
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
     if (!response.ok) throw new Error(`chunk ${index} download failed: HTTP ${response.status}`);
     const pieces = [];
     let length = 0;

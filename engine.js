@@ -14,17 +14,17 @@ const UNZIP_SLICE_BYTES = 64 * 1024;
 // finished, so cleanup searches the channel a second time after this delay.
 const CLEANUP_RECHECK_MS = 3000;
 const PUBLISH_INTERVAL_MS = 250;
-// A gateway timeout (504), a similar 502/503, or a dropped connection doesn't say
-// whether Discord kept the message, so the channel is checked for it and it is
-// sent again only if it isn't there, up to this many attempts in all. The check
-// waits a little longer after each failure, since the message can show up late.
-const SEND_ATTEMPTS = 4;
-const SEND_RECHECK_MS = 3000;
+// A gateway failure or a dropped/idle connection doesn't say whether Discord kept
+// the message, so the channel is checked for it and it is sent again only if it
+// isn't there, up to this many attempts in all.
+const SEND_ATTEMPTS = REQUEST_RETRY_ATTEMPTS;
+const SEND_RECHECK_MS = 1000;
 const channel = new BroadcastChannel(ENGINE_CHANNEL);
 
 let active = null;          // the upload, or the cleanup of one
 let cancelRequested = false;
 let abortController = null;
+let resumeUpload = null;
 let lastPublish = 0;
 let activeDownload = null;
 let lastDownloadPublish = 0;
@@ -52,7 +52,7 @@ function publish(send) { channel.postMessage({ type: "uploadState", send }); }
 function publishActive(extra = {}) {
 	lastPublish = performance.now();
 	const { speed, eta } = active.meter.update(active.bytesSent);
-	publish({ active: true, name: active.name, sent: active.sent, sending: active.sending, total: active.total, bytesSent: active.bytesSent, totalBytes: active.totalBytes, speed, eta, state: "sending", canceling: cancelRequested || active.cleaning, cleaning: active.cleaning, retrying: active.retrying || null, ...extra });
+	publish({ active: true, name: active.name, sent: active.sent, sending: active.sending, total: active.total, bytesSent: active.bytesSent, totalBytes: active.totalBytes, speed, eta, state: "sending", paused: !!active.paused, canceling: cancelRequested || active.cleaning, cleaning: active.cleaning, retrying: active.retrying || null, ...extra });
 }
 function throwIfCanceled() { if (cancelRequested) throw new DOMException("Upload canceled", "AbortError"); }
 
@@ -72,6 +72,16 @@ async function cleanUpUpload(record) {
 function isUncertainFailure(error) {
 	return error.name !== "AbortError" && (error.network || error instanceof TypeError || [502, 503, 504].includes(error.status));
 }
+async function waitForUploadResume() {
+	active.paused = true;
+	active.retrying = null;
+	publishActive();
+	await new Promise((resolve) => { resumeUpload = resolve; });
+	resumeUpload = null;
+	active.meter = new TransferMeter(active.totalBytes);
+	active.paused = false;
+	publishActive();
+}
 // Runs send(); after an uncertain failure, looks for the message among the newest
 // ones in the channel (isSent tells if one is it) and returns that, or sends again.
 async function sendChecked(config, what, send, isSent, onRetry) {
@@ -79,11 +89,18 @@ async function sendChecked(config, what, send, isSent, onRetry) {
 		try { return await send(); }
 		catch (error) {
 			if (cancelRequested || !isUncertainFailure(error)) throw error;
-			await sleep(SEND_RECHECK_MS * attempt);
+			await sleep(SEND_RECHECK_MS);
 			throwIfCanceled();
 			const found = (await messagePage(config, null).catch(() => [])).find(isSent);
 			if (found) return found;
-			if (attempt >= SEND_ATTEMPTS) throw new Error(`${what} could not be sent after ${SEND_ATTEMPTS} attempts (${error.message})`);
+			if (attempt >= SEND_ATTEMPTS) {
+				if (active && isUncertainFailure(error)) {
+					await waitForUploadResume();
+					attempt = 0;
+					continue;
+				}
+				throw new Error(`${what} could not be sent after ${SEND_ATTEMPTS} attempts (${errogitr.message})`);
+			}
 			onRetry?.(attempt + 1, error);
 		}
 	}
@@ -429,6 +446,8 @@ channel.onmessage = async (event) => {
 		cancelRequested = true;
 		abortController?.abort();
 		publishActive();
+	} else if (message.type === "resumeUpload") {
+		resumeUpload?.();
 	} else if (message.type === "startDownload") {
 		if (activeDownload) { publishDownload({ active: false, outcome: "error", sha: message.job.sha, text: "Another download is still running." }); publishActiveDownload(); return; }
 		await runDownload(message.job);
