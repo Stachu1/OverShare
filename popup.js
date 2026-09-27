@@ -1,7 +1,7 @@
 "use strict";
 
 const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "update", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "botStatus", "botDot", "flyer", "tabs", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute", "tooltip", "clearPick",
-  "tabConfig", "configPanel", "configLabel", "configList", "configDrop", "newConfig", "importConfigFile", "configForm", "configFormTitle", "configName", "configToken", "configChannel", "configOpen", "copyConfigName", "copyBotToken", "copyConfigChannel", "cancelConfig", "saveConfig",
+  "tabConfig", "configPanel", "configLabel", "configList", "configDrop", "exportAllConfig", "newConfig", "importConfigFile", "configForm", "configFormTitle", "configName", "configToken", "configChannel", "configOpen", "copyConfigName", "copyBotToken", "copyConfigChannel", "cancelConfig", "saveConfig",
   "dialog", "dialogMessage", "dialogOk", "dialogCancel"];
 const els = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 let selection = null;
@@ -783,6 +783,7 @@ els.tabSend.addEventListener("click", () => showTab("send")); els.tabDownload.ad
 els.tabConfig.addEventListener("click", () => showTab("config"));
 
 els.newConfig.addEventListener("click", () => openConfigForm(true));
+els.exportAllConfig.addEventListener("click", exportAllConfigs);
 els.cancelConfig.addEventListener("click", () => openConfigForm(false));
 for (const field of [els.configName, els.configToken, els.configChannel]) field.addEventListener("input", saveViewState);
 els.configChannel.addEventListener("input", updateOpenBox);
@@ -884,24 +885,53 @@ els.configForm.addEventListener("submit", async (event) => {
   setStatus(`Configuration ${name} ${edited ? "saved" : "added"}${open ? " with an open channel: anyone with this bot can see its files" : ""}.`, "ok");
 });
 // A configuration export holds everything needed to use it elsewhere, bot token included.
+async function configExport(item, storage = null) {
+  const tokens = configTokens(storage || await chrome.storage.local.get(null), item.id);
+  return { overshareConfig: 1, name: item.name, botToken: item.token, channelId: item.channelId, open: !!item.open, files: tokenFileEntries(tokens) };
+}
 async function exportConfig(item) {
-  const tokens = configTokens(await chrome.storage.local.get(null), item.id);
+  if (!await askConfirm("This export contains the bot token, which gives full control of the bot: whoever has it can read, send and delete everything the bot can reach.\n\nShare the exported file only with people you trust.", { ok: "Export", danger: true })) return false;
+  const data = await configExport(item);
   const safeName = item.name.replace(/[^\w-]+/g, "_");
-  downloadJson(`overshare-config-${safeName}.json`, { overshareConfig: 1, name: item.name, botToken: item.token, channelId: item.channelId, open: !!item.open, files: tokenFileEntries(tokens) });
-  setStatus(`${item.name} exported with ${tokens.length} file token(s). The file holds the bot token: keep it private.`, "ok");
+  downloadJson(`overshare-config-${safeName}.json`, [data]);
+  setStatus(`${item.name} exported with ${Object.keys(data.files).length} file token(s). The file holds the bot token: keep it private.`, "ok");
+  return true;
+}
+async function exportAllConfigs() {
+  if (!configs.length) { setStatus("Add a configuration in Config first.", "err"); return; }
+  if (!await askConfirm("This export contains the bot tokens, which give full control of the bots: whoever has them can read, send and delete everything those bots can reach.\n\nShare the exported file only with people you trust.", { ok: "Export All", danger: true })) return;
+  const storage = await chrome.storage.local.get(null);
+  const exports = await Promise.all(configs.map((item) => configExport(item, storage)));
+  downloadJson("overshare-configurations.json", exports);
+  const tokenCount = exports.reduce((count, item) => count + Object.keys(item.files).length, 0);
+  setStatus(`${configs.length} configuration(s) exported with ${tokenCount} file token(s). The file holds bot tokens: keep it private.`, "ok");
 }
 async function importConfig(file) {
   try {
-    const data = JSON.parse(await file.text());
-    if (data?.overshareConfig !== 1 || typeof data.botToken !== "string" || !/^\d+$/.test(String(data.channelId || ""))) throw new Error("not an OverShare configuration export");
-    const pairs = tokensFromFile(data);
-    // The same bot and channel already here just gets the file tokens added.
-    const existing = configs.find((item) => item.token === data.botToken && item.channelId === String(data.channelId));
-    const id = existing?.id || newConfigId();
-    if (!existing) configs = [...configs, { id, name: uniqueConfigName(String(data.name || "").trim().slice(0, 40) || "Imported"), token: data.botToken, channelId: String(data.channelId), open: data.open === true }];
-    await chrome.storage.local.set({ configs, ...tokenItems(id, pairs) });
-    await selectConfig(id);
-    setStatus(existing ? `Added ${pairs.length} file token(s) to ${config.name}, which has the same bot and channel.` : `Configuration ${config.name} imported with ${pairs.length} file token(s).`, "ok");
+    const parsed = JSON.parse(await file.text());
+    const entries = Array.isArray(parsed) ? parsed : [parsed];
+    if (!entries.length) throw new Error("the file contains no configurations");
+    for (const data of entries) {
+      if (data?.overshareConfig !== 1 || typeof data.botToken !== "string" || !/^\d+$/.test(String(data.channelId || ""))) throw new Error("not an OverShare configuration export");
+    }
+    let imported = 0, added = 0, tokenCount = 0, firstId = "";
+    const newTokens = {};
+    for (const data of entries) {
+      const pairs = tokensFromFile(data);
+      const existing = configs.find((item) => item.token === data.botToken && item.channelId === String(data.channelId));
+      const id = existing?.id || newConfigId();
+      if (!firstId) firstId = id;
+      if (!existing) {
+        configs = [...configs, { id, name: uniqueConfigName(String(data.name || "").trim().slice(0, 40) || "Imported"), token: data.botToken, channelId: String(data.channelId), open: data.open === true }];
+        added++;
+      }
+      Object.assign(newTokens, tokenItems(id, pairs));
+      imported++;
+      tokenCount += pairs.length;
+    }
+    await chrome.storage.local.set({ configs, ...newTokens });
+    await selectConfig(firstId);
+    setStatus(`${imported} configuration(s) imported${added ? `, ${added} added` : ""} with ${tokenCount} file token(s).`, "ok");
   } catch (error) { setStatus("Import failed: " + error.message, "err"); }
 }
 els.configDrop.addEventListener("click", () => els.importConfigFile.click());

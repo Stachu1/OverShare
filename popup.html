@@ -133,6 +133,7 @@
     .configPanel { flex: 1; overflow-y: auto; scrollbar-width: none; }
     .configPanel::-webkit-scrollbar { display: none; }
     .config-head { align-items: center; justify-content: space-between; }
+    .config-head > .row { justify-content: flex-end; }
     .config-head label { margin: 0; }
     .config-head .mini { padding: 7px 10px; }
     .config-item { cursor: pointer; transition: border-color 0.15s; }
@@ -152,6 +153,8 @@
     .config-form .row { justify-content: flex-end; }
     button.mini.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
     button.mini.primary:hover:not(:disabled) { background: var(--accent-hover); }
+    button.mini.danger { background: var(--err); border-color: var(--err); color: #fff; }
+    button.mini.danger:hover:not(:disabled) { background: #c93b3e; border-color: #c93b3e; }
 
     .panel { display: none; flex-direction: column; gap: 9px; }
     .panel.active { display: flex; min-height: 0; animation: panel-in 0.24s ease-out; }
@@ -412,7 +415,10 @@
     <section class="panel configPanel" id="configPanel">
       <div class="row config-head">
         <label>Configurations</label>
-        <button class="mini" id="newConfig" data-tip="Add a bot token and channel as a new configuration">New Configuration</button>
+        <div class="row">
+          <button class="mini" id="exportAllConfig" data-tip="Save all configurations, including their bot tokens and file tokens, to one JSON file">Export All</button>
+          <button class="mini primary" id="newConfig" data-tip="Add a bot token and channel as a new configuration">New</button>
+        </div>
       </div>
       <form class="config-form" id="configForm" hidden autocomplete="off">
         <div class="form-title" id="configFormTitle">New configuration</div>
@@ -421,7 +427,7 @@
         <div><label for="configChannel">Discord channel ID, or a name for a new channel</label><div class="field-with-button"><input type="text" id="configChannel" placeholder="Channel ID or e.g. documents" /><button type="button" class="field-copy" id="copyConfigChannel" hidden aria-label="Copy the channel ID or name" data-tip="Copy the channel ID or name"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg></button></div></div>
         <label class="check" data-tip="Creates the new channel as open_&lt;name&gt;. Files in an open channel use OverShare's shared key, so anyone with this bot and OverShare can see and download them without file tokens. Only a new channel can be made open, so enter a name, not an ID"><input type="checkbox" id="configOpen" /> Open: for everyone with the bot token</label>
         <div class="row">
-          <button type="button" class="mini" id="cancelConfig">Cancel</button>
+          <button type="button" class="mini danger" id="cancelConfig">Cancel</button>
           <button type="submit" class="mini primary" id="saveConfig" data-tip="Check the bot, create the channel if a name was given, and save the configuration">Save</button>
         </div>
       </form>
