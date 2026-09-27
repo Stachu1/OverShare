@@ -12,7 +12,7 @@ let activeDownload = null;
 let lastSentToken = ""; // SHA.symmetricKey of the most recent completed send
 let deletingShas = new Set();
 const LIST_PAGE = 4; // files added to the Download list per load
-let scanner = null, listRun = 0, listLoading = false, listFooter = null, shownFiles = 0, incompleteFiles = 0;
+let scanner = null, listRun = 0, listLoading = false, listFooter = null, shownFiles = 0, incompleteFiles = 0, goneFiles = 0, loadedChunks = 0, loadedSize = 0;
 const itemControls = new Map(); // sha -> the rendered list row and its buttons
 // A configuration is one bot and channel: { id, name, token, channelId, open }.
 // open is true for an open channel (see OPEN_MASTER_KEY in shared.js).
@@ -99,7 +99,15 @@ function askConfirm(message, { ok = "OK", cancel = "Cancel", danger = false } = 
 function replayAnimation(element, className) { element.classList.remove(className); void element.offsetWidth; element.classList.add(className); }
 function setStatus(message, kind = "info") {
   els.status.textContent = message; els.status.className = `status ${kind}`;
-  if (kind !== "info") replayAnimation(els.status, "pop");
+  if (kind !== "info" && !els.downloadPanel.classList.contains("active")) replayAnimation(els.status, "pop");
+}
+function loadedFilesStatus() {
+  const kind = goneFiles ? "err" : incompleteFiles ? "warn" : "ok";
+  return { message: `Loaded ${shownFiles} files · ${loadedChunks} chunks · ${humanSize(loadedSize)}`, kind };
+}
+function updateLoadedFilesStatus() {
+  const status = loadedFilesStatus();
+  setStatus(status.message, status.kind);
 }
 function escapeHtml(value) { return String(value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 
@@ -592,7 +600,7 @@ function applyDeleteState(state) {
 // channel only when it is scrolled to the bottom.
 async function refreshFiles() {
   const run = ++listRun;
-  scanner = null; listLoading = false; shownFiles = 0; incompleteFiles = 0;
+  scanner = null; listLoading = false; shownFiles = 0; incompleteFiles = 0; goneFiles = 0; loadedChunks = 0; loadedSize = 0;
   itemControls.clear();
   if (!config.id) { els.fileList.innerHTML = '<div class="empty">Add a configuration in Config first.</div>'; return; }
   els.fileList.textContent = "";
@@ -601,6 +609,7 @@ async function refreshFiles() {
   const keys = await storedKeys();
   if (run !== listRun) return;
   scanner = new TransferScanner(config, config.open ? null : keys);
+  updateLoadedFilesStatus();
   loadMoreFiles();
 }
 async function loadMoreFiles() {
@@ -608,6 +617,7 @@ async function loadMoreFiles() {
   const run = listRun;
   listLoading = true;
   listFooter.textContent = "Searching Discord…";
+  updateLoadedFilesStatus();
   try {
     let loaded = 0;
     while (loaded < LIST_PAGE && !scanner.done) {
@@ -617,8 +627,12 @@ async function loadMoreFiles() {
       els.fileList.insertBefore(fileRow(file, shownFiles), listFooter);
       shownFiles++;
       if (!file.available) incompleteFiles++;
+      if (file.missingFile) goneFiles++;
+      loadedChunks += Number(file.total || file.orphanChunks || 0);
+      loadedSize += Number(file.originalSize || 0);
       loaded++;
       updateItemButtons();
+      updateLoadedFilesStatus();
     }
   } catch (error) {
     if (run !== listRun) return;
@@ -629,10 +643,10 @@ async function loadMoreFiles() {
   } finally { if (run === listRun) listLoading = false; }
   if (scanner.done) {
     if (shownFiles) listFooter.remove(); else listFooter.textContent = "No files found.";
-    setStatus(`${shownFiles - incompleteFiles} complete, ${incompleteFiles} incomplete file(s).`, incompleteFiles ? "info" : "ok");
+    updateLoadedFilesStatus();
   } else {
     listFooter.textContent = "Scroll for more";
-    setStatus(`Showing the latest ${shownFiles} file(s).`, "ok");
+    updateLoadedFilesStatus();
   }
   loadIfAtBottom(); // keeps going while the list is too short to scroll
 }
