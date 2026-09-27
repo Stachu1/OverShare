@@ -1,7 +1,7 @@
 "use strict";
 
 const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "update", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "botStatus", "botDot", "flyer", "tabs", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute", "tooltip", "clearPick",
-  "settingsBtn", "settingsPanel", "configLabel", "configList", "configDrop", "newConfig", "importConfigFile", "configForm", "configFormTitle", "configName", "configToken", "configChannel", "configOpen", "copyConfigName", "copyBotToken", "copyConfigChannel", "cancelConfig", "saveConfig",
+  "tabConfig", "configPanel", "configLabel", "configList", "configDrop", "newConfig", "importConfigFile", "configForm", "configFormTitle", "configName", "configToken", "configChannel", "configOpen", "copyConfigName", "copyBotToken", "copyConfigChannel", "cancelConfig", "saveConfig",
   "dialog", "dialogMessage", "dialogOk", "dialogCancel"];
 const els = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 let selection = null;
@@ -275,48 +275,10 @@ function playSound(name) {
   // A buzzy sawtooth, louder than the other sounds, so a failure is hard to miss.
   if (name === "failed") { const buzz = { type: "sawtooth", volume: 0.09 }; playTone(311, 0.13, 0, buzz); playTone(208, 0.3, 0.14, buzz); }
 }
-// Ratchet clicks for the settings gear's spin: one per SPIN_TOOTH_DEG of turn, timed
-// along the spin's easing curve (gear-open in popup.html), so they come fast while it
-// spins fast and slow down as it stops.
-const SPIN_SECONDS = 0.9, SPIN_DEG = 1080, SPIN_TOOTH_DEG = 45, SPIN_EASING = [0.2, 0.8, 0.2, 1];
-const spinClickTimes = (() => {
-  const [x1, y1, x2, y2] = SPIN_EASING;
-  const bezier = (s, a, b) => 3 * a * s * (1 - s) ** 2 + 3 * b * s * s * (1 - s) + s ** 3;
-  const teeth = SPIN_DEG / SPIN_TOOTH_DEG, times = [0]; // the first click comes with the press
-  for (let step = 1, next = 1; step <= 2000 && next <= teeth; step++) {
-    const s = step / 2000;
-    while (next <= teeth && bezier(s, y1, y2) * teeth >= next - 1e-9) { times.push(bezier(s, x1, x2) * SPIN_SECONDS); next++; }
-  }
-  return times;
-})();
-// A click is a few milliseconds of noise that dies away at once, through a band-pass
-// filter that sets its pitch: a tick, not a tone.
-let clickNoise = null;
-function playClicks(times, pitch) {
-  if (muted) return;
-  try {
-    const context = audio();
-    if (!clickNoise) {
-      const length = Math.round(context.sampleRate * 0.004);
-      clickNoise = context.createBuffer(1, length, context.sampleRate);
-      const samples = clickNoise.getChannelData(0);
-      for (let i = 0; i < length; i++) samples[i] = (Math.random() * 2 - 1) * Math.exp(-i / (length / 5));
-    }
-    const now = context.currentTime;
-    times.forEach((time, tooth) => {
-      const source = context.createBufferSource(); source.buffer = clickNoise;
-      const filter = context.createBiquadFilter(); filter.type = "bandpass"; filter.frequency.value = pitch(tooth); filter.Q.value = 2;
-      const gain = context.createGain(); gain.gain.value = 0.5;
-      source.connect(filter).connect(gain).connect(context.destination);
-      source.start(now + time);
-    });
-  } catch (_) {}
-}
-function playSpinClicks() { playClicks(spinClickTimes, (tooth) => tooth % 2 ? 3200 : 4000); }
 let hoveredButton = null;
 document.addEventListener("mouseover", (event) => { const button = event.target.closest("button"); if (button && button !== hoveredButton) { hoveredButton = button; playSound("hover"); } });
 document.addEventListener("mouseout", (event) => { if (!event.relatedTarget?.closest?.("button")) hoveredButton = null; });
-document.addEventListener("click", (event) => { const button = event.target.closest("button"); if (button && button !== els.mute && button !== els.settingsBtn) playSound("click"); }, true);
+document.addEventListener("click", (event) => { const button = event.target.closest("button"); if (button && button !== els.mute && button !== els.tabConfig) playSound("click"); }, true);
 
 let botState = "checking";
 // The header dot, the status line and the "In use" label of the configuration list follow the bot check.
@@ -330,7 +292,7 @@ function setBotStatus(message, kind) {
 // Resolves true when connected, false on an error, and null when a newer check took over.
 async function checkBot() {
   const run = ++botCheckRun;
-  if (!config.id) { setBotStatus("No configuration: add one in ⚙️ Settings", "bad"); return false; }
+  if (!config.id) { setBotStatus("No configuration: add one in Config", "bad"); return false; }
   setBotStatus("Checking bot…", "checking");
   try {
     const bot = await discordRequest(config, "GET", "/users/@me");
@@ -355,19 +317,20 @@ async function checkBot() {
     return false;
   }
 }
-function requireConfig() { if (!config.id) throw new Error("add a configuration in Settings first"); }
-// name is "send", "download" or "settings".
-// Settings hides the tabs; closing it goes back to the tab that was open.
+function requireConfig() { if (!config.id) throw new Error("add a configuration in Config first"); }
+// name is "send", "download" or "config".
 function showTab(name) {
   currentTab = name;
-  els.tabs.hidden = name === "settings";
-  if (name !== "settings") {
-    lastMainTab = name;
-    els.tabs.classList.toggle("download", name === "download");
-    els.tabSend.classList.toggle("active", name === "send"); els.tabDownload.classList.toggle("active", name === "download");
-  }
-  els.sendPanel.classList.toggle("active", name === "send"); els.downloadPanel.classList.toggle("active", name === "download");
-  els.settingsPanel.classList.toggle("active", name === "settings"); els.settingsBtn.classList.toggle("active", name === "settings");
+  els.tabs.hidden = false;
+  lastMainTab = name === "config" ? lastMainTab : name;
+  els.tabs.classList.toggle("download", name === "download");
+  els.tabs.classList.toggle("config", name === "config");
+  els.tabSend.classList.toggle("active", name === "send");
+  els.tabDownload.classList.toggle("active", name === "download");
+  els.tabConfig.classList.toggle("active", name === "config");
+  els.sendPanel.classList.toggle("active", name === "send");
+  els.downloadPanel.classList.toggle("active", name === "download");
+  els.configPanel.classList.toggle("active", name === "config");
   if (name === "download") refreshFiles();
   saveViewState();
 }
@@ -380,9 +343,12 @@ function saveViewState() {
 }
 async function restoreViewState() {
   const { view } = await chrome.storage.session.get("view").catch(() => ({}));
-  if (!configs.length) showTab("settings");
-  else if (view) { lastMainTab = view.lastMainTab || "send"; showTab(view.tab || "send"); }
-  // With nothing set up yet, Settings opens with the new configuration form.
+  if (!configs.length) showTab("config");
+  else if (view) {
+    lastMainTab = view.lastMainTab || "send";
+    showTab(view.tab === "settings" ? "config" : view.tab || "send");
+  }
+  // With nothing set up yet, Config opens with the new configuration form.
   if (!view?.form && configs.length) return;
   openConfigForm(true, configs.find((item) => item.id === view?.form?.editingId));
   if (view?.form) {
@@ -628,7 +594,7 @@ async function refreshFiles() {
   const run = ++listRun;
   scanner = null; listLoading = false; shownFiles = 0; incompleteFiles = 0;
   itemControls.clear();
-  if (!config.id) { els.fileList.innerHTML = '<div class="empty">Add a configuration in ⚙️ Settings first.</div>'; return; }
+  if (!config.id) { els.fileList.innerHTML = '<div class="empty">Add a configuration in Config first.</div>'; return; }
   els.fileList.textContent = "";
   listFooter = document.createElement("div"); listFooter.className = "empty";
   els.fileList.appendChild(listFooter);
@@ -739,7 +705,7 @@ els.loadToken.addEventListener("click", async () => {
   const value = els.downloadToken.value.trim();
   const match = value.match(/^([a-f0-9]{16}|[a-f0-9]{64})\.([A-Za-z0-9_-]+)$/i);
   if (!match) { setStatus("Enter a valid file token (ID.key).", "err"); return; }
-  if (!config.id) { setStatus("Add a configuration in Settings first.", "err"); return; }
+  if (!config.id) { setStatus("Add a configuration in Config first.", "err"); return; }
   await chrome.storage.local.set({ [tokenKey(config.id, match[1])]: match[2] });
   els.downloadToken.value = "";
   setStatus("File token loaded.", "ok");
@@ -755,7 +721,7 @@ function downloadJson(filename, value) {
 }
 // Token exports hold only file tokens, never the bot token or channel ID.
 els.exportStorage.addEventListener("click", async () => {
-  if (!config.id) { setStatus("Add a configuration in Settings first.", "err"); return; }
+  if (!config.id) { setStatus("Add a configuration in Config first.", "err"); return; }
   const tokens = await storedKeys();
   downloadJson("overshare-tokens.json", tokenFileEntries(tokens));
   setStatus(`${tokens.length} file token(s) exported.`, "ok");
@@ -797,7 +763,7 @@ els.send.addEventListener("click", async () => {
     return;
   }
   if (!payload) return;
-  if (!config.id) { setStatus("Add a configuration in Settings first.", "err"); return; }
+  if (!config.id) { setStatus("Add a configuration in Config first.", "err"); return; }
   els.send.disabled = true; els.send.textContent = "Starting…"; els.progress.classList.add("show"); els.bar.style.width = "0%";
   const metadata = { sha: payload.sha, name: payload.name, kind: payload.kind, originalSize: payload.originalSize };
   const symmetricKey = config.open ? OPEN_MASTER_KEY : payload.symmetricKey;
@@ -814,16 +780,7 @@ els.fileList.addEventListener("scroll", loadIfAtBottom);
 // Keeps the "5min ago" labels current while the popup stays open.
 setInterval(() => { for (const when of els.fileList.querySelectorAll(".sent-at")) when.textContent = timeAgo(Number(when.dataset.time)); }, 60000);
 els.tabSend.addEventListener("click", () => showTab("send")); els.tabDownload.addEventListener("click", () => showTab("download"));
-// The gear turns on press, not on release; the click event is kept for the keyboard.
-function toggleSettings() {
-  const opening = currentTab !== "settings";
-  els.settingsBtn.classList.remove("spin-open", "spin-close");
-  replayAnimation(els.settingsBtn, opening ? "spin-open" : "spin-close");
-  playSpinClicks();
-  showTab(opening ? "settings" : lastMainTab);
-}
-els.settingsBtn.addEventListener("pointerdown", (event) => { if (event.button === 0) toggleSettings(); });
-els.settingsBtn.addEventListener("click", (event) => { if (event.detail === 0) toggleSettings(); });
+els.tabConfig.addEventListener("click", () => showTab("config"));
 
 els.newConfig.addEventListener("click", () => openConfigForm(true));
 els.cancelConfig.addEventListener("click", () => openConfigForm(false));

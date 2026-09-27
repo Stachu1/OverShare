@@ -71,14 +71,6 @@
     }
     .iconbtn:hover { opacity: 1; }
     .iconbtn.active { opacity: 1; filter: drop-shadow(0 0 4px var(--accent)); }
-    /* The settings gear spins forward when Settings opens and back when it closes.
-       popup.js times its clicks from this duration, angle and easing (SPIN_*). */
-    #settingsBtn { display: inline-block; }
-    #settingsBtn.spin-open { animation: gear-open 0.9s cubic-bezier(0.2, 0.8, 0.2, 1); }
-    #settingsBtn.spin-close { animation: gear-close 0.9s cubic-bezier(0.2, 0.8, 0.2, 1); }
-    @keyframes gear-open { from { transform: rotate(0); } to { transform: rotate(1080deg); } }
-    @keyframes gear-close { from { transform: rotate(1080deg); } to { transform: rotate(0); } }
-
     main { flex: 1; min-height: 0; overflow: hidden; padding: 14px; display: flex; flex-direction: column; gap: 9px; }
 
     label {
@@ -121,27 +113,28 @@
     select.mini-select:hover { border-color: var(--accent); }
 
     /* Tabs */
-    .tabs { flex: 0 0 auto; display: flex; gap: 12px; background: var(--panel-2); padding: 4px; border-radius: 10px; position: relative; }
+    .tabs { flex: 0 0 auto; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; background: var(--panel-2); padding: 4px; border-radius: 10px; position: relative; }
     .tabs button {
-      flex: 1; padding: 8px; border: none; border-radius: 7px;
+      width: 100%; padding: 8px; border: none; border-radius: 7px;
       background: transparent; color: var(--muted); position: relative; z-index: 1;
       font-size: 13px; font-weight: 600; cursor: pointer; transition: color 0.2s, transform 0.08s;
     }
     .tabs button.active { color: #fff; }
     .tabs .indicator {
-      position: absolute; top: 4px; bottom: 4px; left: 4px; width: calc(50% - 10px);
+      position: absolute; top: 4px; bottom: 4px; left: 4px; width: calc((100% - 20px) / 3);
       background: var(--accent); border-radius: 7px;
       transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
     }
-    .tabs.download .indicator { transform: translateX(calc(100% + 12px)); }
+    .tabs.download .indicator { transform: translateX(calc(100% + 6px)); }
+    .tabs.config .indicator { transform: translateX(calc((100% + 6px) * 2)); }
     .tabs[hidden] { display: none; }
 
-    /* Settings */
-    .settingsPanel { flex: 1; overflow-y: auto; scrollbar-width: none; }
-    .settingsPanel::-webkit-scrollbar { display: none; }
-    .settings-head { align-items: center; justify-content: space-between; }
-    .settings-head label { margin: 0; }
-    .settings-head .mini { padding: 7px 10px; }
+    /* Configuration */
+    .configPanel { flex: 1; overflow-y: auto; scrollbar-width: none; }
+    .configPanel::-webkit-scrollbar { display: none; }
+    .config-head { align-items: center; justify-content: space-between; }
+    .config-head label { margin: 0; }
+    .config-head .mini { padding: 7px 10px; }
     .config-item { cursor: pointer; transition: border-color 0.15s; }
     .config-item:hover { border-color: var(--muted); }
     .config-item.current { border-color: var(--accent); cursor: default; }
@@ -364,7 +357,6 @@
     <span class="version" id="version"></span>
     <a class="update" id="update" hidden href="https://github.com/Stachu1/OverShare/archive/refs/heads/main.zip" data-tip="A newer version is on GitHub. Download the zip and load it in place of this one">Update Available</a>
     <button class="iconbtn" id="mute" data-tip="Mute or unmute interface sounds">🔊</button>
-    <button class="iconbtn" id="settingsBtn" data-tip="Settings: choose, add, import, export or delete configurations">⚙️</button>
   </header>
 
   <main>
@@ -376,6 +368,7 @@
       <span class="indicator"></span>
       <button id="tabSend" class="active" data-tip="Upload files and folders">Send</button>
       <button id="tabDownload" data-tip="Find and download files you have tokens for">Download</button>
+      <button id="tabConfig" data-tip="Choose, add, import, export or delete configurations">Config</button>
     </div>
 
     <section class="panel active" id="sendPanel">
@@ -416,8 +409,8 @@
       <div class="progress" id="downloadProgress"><div class="bar" id="downloadBar"></div></div>
     </section>
 
-    <section class="panel settingsPanel" id="settingsPanel">
-      <div class="row settings-head">
+    <section class="panel configPanel" id="configPanel">
+      <div class="row config-head">
         <label>Configurations</label>
         <button class="mini" id="newConfig" data-tip="Add a bot token and channel as a new configuration">New Configuration</button>
       </div>
