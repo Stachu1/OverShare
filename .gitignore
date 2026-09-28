@@ -6,3 +6,4 @@
 *.pem
 _metadata/
 overshare-tokens.json
+__pycache__/
