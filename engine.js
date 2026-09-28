@@ -60,12 +60,12 @@ function throwIfCanceled() { if (cancelRequested) throw new DOMException("Upload
 // kept so the partial file shows in the Download list and can be deleted there.
 async function cleanUpUpload(record) {
   try {
-    await deleteTransfers(record.config, [record.sha]);
+    await deleteTransfers(record.config, [record.transferId]);
     await sleep(CLEANUP_RECHECK_MS);
-    await deleteTransfers(record.config, [record.sha]);
+    await deleteTransfers(record.config, [record.transferId]);
     return null;
   } catch (error) {
-    await storage("set", { [tokenKey(record.config.id, record.sha)]: record.symmetricKey }).catch(() => {});
+    await storage("set", { [tokenKey(record.config.id, record.transferId)]: record.symmetricKey }).catch(() => {});
     return error;
   }
 }
@@ -151,8 +151,8 @@ function zipEntry(path, file) {
 
 async function runUpload(job) {
   const { metadata, config, files } = job;
-  const { sha, name, originalSize } = metadata;
-  const record = { name, sha, symmetricKey: job.symmetricKey, config };
+  const { transferId, name, originalSize } = metadata;
+  const record = { name, transferId, symmetricKey: job.symmetricKey, config };
   activeUpload = { name, sent: 0, bytesSent: 0, totalBytes: originalSize, meter: new TransferMeter(originalSize), cleaning: false };
   abortController = new AbortController();
   const startedAt = performance.now();
@@ -177,12 +177,12 @@ async function runUpload(job) {
 
     async function sendPiece(plain, final) {
       const number = ++index;
-      const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: chunkIv(prefix, number), additionalData: chunkAad(sha, number, final) }, key, plain);
+      const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: chunkIv(prefix, number), additionalData: chunkAad(transferId, number, final) }, key, plain);
       encryptedSize += ciphertext.byteLength;
       // Progress is counted in original bytes, spread over each chunk as it uploads.
       const from = lastCutInput, to = final ? originalSize : inputRead;
       lastCutInput = to;
-      const piece = { number, filename: `${sha}.${number}`, blob: new Blob([ciphertext]), bytes: ciphertext.byteLength, from, to, final };
+      const piece = { number, filename: `${transferId}.${number}`, blob: new Blob([ciphertext]), bytes: ciphertext.byteLength, from, to, final };
       await uploading;
       if (uploadError) throw uploadError;
       throwIfCanceled();
@@ -308,7 +308,7 @@ async function runUpload(job) {
     await uploading;
     if (uploadError) throw uploadError;
     throwIfCanceled();
-    const manifest = { v: 4, sha, name, kind: metadata.kind, originalSize, encryptedSize, total: index, iv: base64urlEncode(prefix), firstId };
+    const manifest = { v: MANIFEST_VERSION, transferId, name, kind: metadata.kind, originalSize, encryptedSize, total: index, iv: base64urlEncode(prefix), firstId };
     manifest.title = await encryptManifestTitle(manifest, key);
     manifest.tag = await manifestTag(manifest, key);
     delete manifest.name;
@@ -317,7 +317,7 @@ async function runUpload(job) {
       () => discordRequest(config, "POST", path, { json: { content }, signal: abortController.signal }),
       (sent) => sent.content === content);
     // An open channel lists every file without tokens, so only the latest send's token is kept.
-    await storage("set", { ...(config.open ? {} : { [tokenKey(config.id, sha)]: job.symmetricKey }), [lastTokenKey(config.id)]: `${sha}.${job.symmetricKey}` });
+    await storage("set", { ...(config.open ? {} : { [tokenKey(config.id, transferId)]: job.symmetricKey }), [lastTokenKey(config.id)]: `${transferId}.${job.symmetricKey}` });
     await storage("remove", ["activeUpload"]);
     const seconds = (performance.now() - startedAt) / 1000;
     publishUpload({ active: false, outcome: "ok", name, size: originalSize, speed: seconds > 0 ? originalSize / seconds : 0, fallback: !direct });
@@ -354,7 +354,8 @@ async function cleanUpInterruptedUpload(record) {
 // On startup, a stored activeUpload means the browser closed mid-send.
 const ready = (async () => {
   const { activeUpload: record } = await storage("get", ["activeUpload"]);
-  if (!record?.sha) return;
+  if (record && !record.transferId) record.transferId = record.sha; // stored before 5.27
+  if (!record?.transferId) return;
   if (!record.config?.id) {
     const { configs, activeConfigId } = await storage("get", ["configs", "activeConfigId"]);
     record.config = configs?.find((config) => config.id === activeConfigId) || { id: activeConfigId, ...record.config };
@@ -369,7 +370,7 @@ function publishDownload(state) { engineChannel.postMessage({ type: "downloadSta
 function publishActiveDownload() {
   lastDownloadPublish = performance.now();
   const { speed, eta } = activeDownload.meter ? activeDownload.meter.update(activeDownload.done) : { speed: 0, eta: null };
-  publishDownload({ active: true, sha: activeDownload.sha, name: activeDownload.name, phase: activeDownload.phase, done: activeDownload.done, totalBytes: activeDownload.totalBytes, speed, eta });
+  publishDownload({ active: true, transferId: activeDownload.transferId, name: activeDownload.name, phase: activeDownload.phase, done: activeDownload.done, totalBytes: activeDownload.totalBytes, speed, eta });
 }
 async function saveBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
@@ -420,7 +421,7 @@ function unzipSink(openFile) {
 }
 
 async function runDownload(job) {
-  activeDownload = { sha: job.sha, name: job.name, phase: "downloading", done: 0, totalBytes: 0, meter: null };
+  activeDownload = { transferId: job.transferId, name: job.name, phase: "downloading", done: 0, totalBytes: 0, meter: null };
   publishActiveDownload();
   try {
     const encodedKey = job.token.split(".", 2)[1];
@@ -455,9 +456,9 @@ async function runDownload(job) {
     activeDownload.phase = "saving"; publishActiveDownload();
     await sink.done();
     await Promise.all(saves);
-    publishDownload({ active: false, outcome: "ok", sha: job.sha, text: `Downloaded ${job.name} ✓${note}` });
+    publishDownload({ active: false, outcome: "ok", transferId: job.transferId, text: `Downloaded ${job.name} ✓${note}` });
   } catch (error) {
-    publishDownload({ active: false, outcome: "error", sha: job.sha, text: `Download failed: ${error.message}` });
+    publishDownload({ active: false, outcome: "error", transferId: job.transferId, text: `Download failed: ${error.message}` });
   } finally {
     activeDownload = null;
   }
@@ -465,28 +466,28 @@ async function runDownload(job) {
 
 // ---- Deletes ----
 
-function pendingDeleteShas() { return deleteJobs.flatMap((job) => job.shas); }
+function pendingDeleteTransferIds() { return deleteJobs.flatMap((job) => job.transferIds); }
 function publishDeletes(finished = null) {
   const current = deleteJobs[0];
-  engineChannel.postMessage({ type: "deleteState", state: { pendingShas: pendingDeleteShas(), current: current ? { label: current.label, deleted: current.deleted } : null, finished } });
+  engineChannel.postMessage({ type: "deleteState", state: { pendingTransferIds: pendingDeleteTransferIds(), current: current ? { label: current.label, deleted: current.deleted } : null, finished } });
 }
-async function removeTokens(configId, shas) {
+async function removeTokens(configId, transferIds) {
   const data = await storage("get", null);
-  const removals = shas.map((sha) => tokenKey(configId, sha)).filter((name) => name in data);
+  const removals = transferIds.map((transferId) => tokenKey(configId, transferId)).filter((name) => name in data);
   const last = data[lastTokenKey(configId)];
-  if (typeof last === "string" && shas.includes(last.split(".", 1)[0])) removals.push(lastTokenKey(configId));
+  if (typeof last === "string" && transferIds.includes(last.split(".", 1)[0])) removals.push(lastTokenKey(configId));
   if (removals.length) await storage("remove", removals);
 }
 async function runDelete(job) {
   publishDeletes();
   let finished;
   try {
-    const deleted = await deleteTransfers(job.config, job.shas, (count) => { job.deleted = count; publishDeletes(); });
+    const deleted = await deleteTransfers(job.config, job.transferIds, (count) => { job.deleted = count; publishDeletes(); });
     // Tokens go only after Discord is clean, so an interrupted delete can be retried.
-    await removeTokens(job.config.id, job.shas);
-    finished = { outcome: "ok", shas: job.shas, text: `Deleted ${job.label}: ${deleted} Discord message(s) removed.` };
+    await removeTokens(job.config.id, job.transferIds);
+    finished = { outcome: "ok", transferIds: job.transferIds, text: `Deleted ${job.label}: ${deleted} Discord message(s) removed.` };
   } catch (error) {
-    finished = { outcome: "error", shas: job.shas, text: `Delete failed: ${error.message}` };
+    finished = { outcome: "error", transferIds: job.transferIds, text: `Delete failed: ${error.message}` };
   }
   deleteJobs.shift();
   publishDeletes(finished);
@@ -520,7 +521,7 @@ engineChannel.onmessage = async (event) => {
   } else if (message.type === "resumeUpload") {
     resumeUpload?.();
   } else if (message.type === "startDownload") {
-    if (activeDownload) { publishDownload({ active: false, outcome: "error", sha: message.job.sha, text: "Another download is still running." }); publishActiveDownload(); return; }
+    if (activeDownload) { publishDownload({ active: false, outcome: "error", transferId: message.job.transferId, text: "Another download is still running." }); publishActiveDownload(); return; }
     await runDownload(message.job);
   } else if (message.type === "startDelete") {
     enqueueDelete(message.job);

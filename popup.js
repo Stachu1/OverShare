@@ -9,11 +9,11 @@ let payload = null;
 let muted = false;
 let activeUpload = null;
 let activeDownload = null;
-let lastSentToken = ""; // SHA.symmetricKey of the most recent completed send
-let deletingShas = new Set();
+let lastSentToken = ""; // the file token (transferId.symmetricKey) of the most recent completed send
+let deletingTransferIds = new Set();
 const LIST_PAGE = 4; // files added to the Download list per load
 let scanner = null, listRun = 0, listLoading = false, listFooter = null, shownFiles = 0, incompleteFiles = 0, goneFiles = 0, loadedChunks = 0, loadedSize = 0;
-const itemControls = new Map(); // sha -> the rendered list row and its buttons
+const itemControls = new Map(); // transferId -> the rendered list row and its buttons
 // A configuration is one bot and channel: { id, name, token, channelId, open }.
 // open is true for an open channel (see OPEN_MASTER_KEY in shared.js).
 const NO_CONFIG = { id: "", name: "", token: "", channelId: "", open: false };
@@ -134,7 +134,7 @@ function prepareSelection() {
   if (!selection) return;
   payload = {
     kind: selection.kind, name: selection.name, files: selection.files,
-    sha: randomHex(ID_BYTES), symmetricKey: base64urlEncode(crypto.getRandomValues(new Uint8Array(32))),
+    transferId: randomHex(ID_BYTES), symmetricKey: base64urlEncode(crypto.getRandomValues(new Uint8Array(32))),
     originalSize: selection.files.reduce((n, r) => n + r.file.size, 0), entries: selection.files.length,
   };
   els.drop.classList.add("has-file");
@@ -201,7 +201,7 @@ function applyUploadState(state) {
     resetUploadProgress();
     refreshSendState();
     if (state.idle) return;
-    if (state.outcome === "ok") { clearSelection(); if (old.symmetricKey && old.configId === config.id) lastSentToken = `${old.sha}.${old.symmetricKey}`; playSound("send"); setStatus(`Sent ${state.name || old.name}${old.open ? " to the open channel" : ""}: ${humanSize(state.size || 0)} (${humanSize(state.speed || 0)}/s)${state.fallback ? " · 1 chunk per message, as Discord's upload API failed" : ""}`, "ok"); launchFlyer("🚀", "fly"); }
+    if (state.outcome === "ok") { clearSelection(); if (old.symmetricKey && old.configId === config.id) lastSentToken = `${old.transferId}.${old.symmetricKey}`; playSound("send"); setStatus(`Sent ${state.name || old.name}${old.open ? " to the open channel" : ""}: ${humanSize(state.size || 0)} (${humanSize(state.speed || 0)}/s)${state.fallback ? " · 1 chunk per message, as Discord's upload API failed" : ""}`, "ok"); launchFlyer("🚀", "fly"); }
     else setStatus(state.text || "Upload failed", state.failed ? "err" : "info");
   }
 }
@@ -359,9 +359,9 @@ async function restoreViewState() {
   }
 }
 async function storedTokens() { return configTokens(await chrome.storage.local.get(null), config.id); }
-async function storedKey(sha) {
+async function storedKey(transferId) {
   if (config.open) return OPEN_MASTER_KEY;
-  const name = tokenKey(config.id, sha);
+  const name = tokenKey(config.id, transferId);
   return (await chrome.storage.local.get(name))[name];
 }
 
@@ -471,17 +471,17 @@ function uniqueConfigName(name) {
   return candidate;
 }
 // Stored file tokens in the export file format: { "<id>.symmetricKey": key }.
-function tokenFileEntries(tokens) { return Object.fromEntries(tokens.map((token) => { const [sha, key] = token.split("."); return [`${sha}.symmetricKey`, key]; })); }
+function tokenFileEntries(tokens) { return Object.fromEntries(tokens.map((token) => { const [transferId, key] = token.split("."); return [`${transferId}.symmetricKey`, key]; })); }
 // Reads [id, key] pairs from a token export, or from a configuration export's file tokens.
 function tokensFromFile(data) {
   const source = data?.overshareConfig ? data.files : data;
   if (!source || Array.isArray(source) || typeof source !== "object") throw new Error("JSON must contain an object");
   return Object.entries(source)
     .map(([name, value]) => [name.match(/^([a-f0-9]{16}|[a-f0-9]{64})\.symmetricKey$/i)?.[1], value])
-    .filter(([sha, value]) => sha && typeof value === "string" && /^[A-Za-z0-9_-]+$/.test(value));
+    .filter(([transferId, value]) => transferId && typeof value === "string" && /^[A-Za-z0-9_-]+$/.test(value));
 }
-function tokenItems(configId, pairs) { return Object.fromEntries(pairs.map(([sha, key]) => [tokenKey(configId, sha), key])); }
-function busyWithConfig() { return !!activeUpload || !!activeDownload || deletingShas.size > 0; }
+function tokenItems(configId, pairs) { return Object.fromEntries(pairs.map(([transferId, key]) => [tokenKey(configId, transferId), key])); }
+function busyWithConfig() { return !!activeUpload || !!activeDownload || deletingTransferIds.size > 0; }
 // item is the configuration to edit; without it the form adds a new one.
 function openConfigForm(open, item = null) {
   els.configForm.hidden = !open;
@@ -507,14 +507,14 @@ function updateOpenBox() {
   els.configOpen.disabled = isId;
 }
 function updateItemButtons() {
-  for (const [sha, { file, downloadButton, deleteButton }] of itemControls) {
-    const downloading = activeDownload?.sha === sha, deleting = deletingShas.has(sha);
+  for (const [transferId, { file, downloadButton, deleteButton }] of itemControls) {
+    const downloading = activeDownload?.transferId === transferId, deleting = deletingTransferIds.has(transferId);
     downloadButton.disabled = !file.available || !!activeDownload || deleting;
     downloadButton.textContent = !downloading ? "Download" : activeDownload.phase === "saving" ? "Saving…" : `${activeDownload.percent || 0}%`;
     deleteButton.disabled = deleting || downloading;
     deleteButton.textContent = deleting ? "Deleting…" : "Delete";
   }
-  els.deleteTokens.disabled = deletingShas.size > 0;
+  els.deleteTokens.disabled = deletingTransferIds.size > 0;
 }
 function timeAgo(time) {
   const minutes = Math.floor((Date.now() - time) / 60000);
@@ -549,40 +549,40 @@ function fileRow(file, position) {
   if (config.open) secondaryActions.append(deleteButton);
   else secondaryActions.append(copyButton, deleteButton);
   actions.append(button, secondaryActions); item.append(meta, actions);
-  itemControls.set(file.sha, { file, item, downloadButton: button, deleteButton });
+  itemControls.set(file.transferId, { file, item, downloadButton: button, deleteButton });
   return item;
 }
 async function copyFileToken(file, button) {
   try {
-    const symmetricKey = await storedKey(file.sha);
+    const symmetricKey = await storedKey(file.transferId);
     if (!symmetricKey) throw new Error("token is not stored locally");
-    await navigator.clipboard.writeText(`${file.sha}.${symmetricKey}`);
+    await navigator.clipboard.writeText(`${file.transferId}.${symmetricKey}`);
     flashCopied(button);
     setStatus("File token copied to clipboard.", "ok");
   } catch (error) { setStatus("Copy failed: " + error.message, "err"); }
 }
 async function deleteFile(file) {
-  if (!await storedKey(file.sha)) { setStatus("Delete failed: token is not stored locally.", "err"); return; }
+  if (!await storedKey(file.transferId)) { setStatus("Delete failed: token is not stored locally.", "err"); return; }
   const question = config.open ? `Delete "${file.name}" from the open channel? It goes for everyone who shares it. This cannot be undone.`
     : `Delete "${file.name}" from Discord and local storage? This cannot be undone.`;
   if (!await askConfirm(question, { ok: "Delete", danger: true })) return;
   try { requireConfig(); } catch (error) { setStatus("Delete failed: " + error.message, "err"); return; }
-  startDelete([file.sha], file.name);
+  startDelete([file.transferId], file.name);
 }
 // Deletes run in the engine, so they finish even if the popup closes.
-function startDelete(shas, label) {
-  deletingShas = new Set([...deletingShas, ...shas]);
+function startDelete(transferIds, label) {
+  deletingTransferIds = new Set([...deletingTransferIds, ...transferIds]);
   updateItemButtons();
   setStatus(`Deleting ${label}…`, "info");
-  engineChannel.postMessage({ type: "startDelete", job: { config, shas, label } });
+  engineChannel.postMessage({ type: "startDelete", job: { config, transferIds, label } });
 }
 function applyDeleteState(state) {
-  deletingShas = new Set(state.pendingShas || []);
+  deletingTransferIds = new Set(state.pendingTransferIds || []);
   if (state.finished) {
-    const { outcome, shas, text } = state.finished;
+    const { outcome, transferIds, text } = state.finished;
     setStatus(text, outcome === "ok" ? "ok" : "err");
     if (outcome === "ok" && els.downloadPanel.classList.contains("active")) {
-      const rows = shas.map((sha) => itemControls.get(sha)?.item).filter(Boolean);
+      const rows = transferIds.map((transferId) => itemControls.get(transferId)?.item).filter(Boolean);
       rows.forEach((row) => row.classList.add("removing"));
       setTimeout(refreshFiles, rows.length ? 280 : 0);
     }
@@ -654,10 +654,10 @@ async function downloadFile(file) {
     requireConfig();
     let dirHandle = null;
     if (file.kind === "folder" && window.showDirectoryPicker) dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
-    const token = `${file.sha}.${await storedKey(file.sha)}`;
-    activeDownload = { active: true, sha: file.sha, name: file.name, phase: "downloading", done: 0, totalBytes: 0 };
+    const token = `${file.transferId}.${await storedKey(file.transferId)}`;
+    activeDownload = { active: true, transferId: file.transferId, name: file.name, phase: "downloading", done: 0, totalBytes: 0 };
     applyDownloadState(activeDownload);
-    engineChannel.postMessage({ type: "startDownload", job: { config, token, sha: file.sha, name: file.name, kind: file.kind, dirHandle } });
+    engineChannel.postMessage({ type: "startDownload", job: { config, token, transferId: file.transferId, name: file.name, kind: file.kind, dirHandle } });
   } catch (error) { if (error.name !== "AbortError") setStatus("Download failed: " + error.message, "err"); }
 }
 function applyDownloadState(state) {
@@ -670,7 +670,7 @@ function applyDownloadState(state) {
     if (state.phase === "saving") setStatus(`Decrypting and saving ${state.name}…`, "info");
     else setStatus(`Downloading ${state.name} · ${percent}% · ${transferStats(state)}`, "info");
   } else {
-    if (activeDownload?.sha === state.sha) activeDownload = null;
+    if (activeDownload?.transferId === state.transferId) activeDownload = null;
     if (state.outcome === "ok") { els.downloadBar.style.width = "100%"; playSound("download"); setStatus(state.text, "ok"); launchFlyer("📦", "drop-in"); }
     else setStatus(state.text, "err");
     if (!activeDownload) setTimeout(() => { if (!activeDownload) els.downloadProgress.classList.remove("show"); }, 1200);
@@ -705,8 +705,8 @@ els.drop.addEventListener("drop", async (event) => {
 });
 els.copyToken.addEventListener("click", async () => {
   // The latest send wins: the one in progress, else the last finished one, else the current selection.
-  const token = activeUpload?.symmetricKey ? `${activeUpload.sha}.${activeUpload.symmetricKey}`
-    : lastSentToken || (payload ? `${payload.sha}.${payload.symmetricKey}` : "");
+  const token = activeUpload?.symmetricKey ? `${activeUpload.transferId}.${activeUpload.symmetricKey}`
+    : lastSentToken || (payload ? `${payload.transferId}.${payload.symmetricKey}` : "");
   if (!token) { setStatus("Send a file first.", "info"); return; }
   await navigator.clipboard.writeText(token);
   flashCopied(els.copyToken);
@@ -759,7 +759,7 @@ els.deleteTokens.addEventListener("click", async () => {
   if (!await askConfirm(`Delete ${tokens.length} file token(s) and their Discord files? This cannot be undone.`, { ok: "Delete all", danger: true })) return;
   try { requireConfig(); } catch (error) { setStatus("Delete failed: " + error.message, "err"); return; }
   els.downloadToken.value = "";
-  startDelete([...shasFromTokens(tokens)], `${tokens.length} file(s)`);
+  startDelete([...transferIdsFromTokens(tokens)], `${tokens.length} file(s)`);
 });
 els.mute.addEventListener("click", () => {
   muted = !muted;
@@ -783,12 +783,12 @@ els.send.addEventListener("click", async () => {
   if (!payload) return;
   if (!config.id) { setStatus("Add a configuration in Config first.", "err"); return; }
   els.send.disabled = true; els.send.textContent = "Starting…"; els.progress.classList.add("show"); els.bar.style.width = "0%";
-  const metadata = { sha: payload.sha, name: payload.name, kind: payload.kind, originalSize: payload.originalSize };
+  const metadata = { transferId: payload.transferId, name: payload.name, kind: payload.kind, originalSize: payload.originalSize };
   const symmetricKey = config.open ? OPEN_MASTER_KEY : payload.symmetricKey;
   try {
     // File objects cross to the engine by reference; their contents are read there, piece by piece.
     engineChannel.postMessage({ type: "startUpload", job: { metadata, config, symmetricKey, files: payload.files } });
-    activeUpload = { name: payload.name, sha: payload.sha, symmetricKey, configId: config.id, open: !!config.open };
+    activeUpload = { name: payload.name, transferId: payload.transferId, symmetricKey, configId: config.id, open: !!config.open };
     // Each send gets a fresh ID and key, so the selection is used up.
     clearSelectionData();
     refreshSendState();
@@ -999,7 +999,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   applyOpenMode();
   muted = !!data.muted; els.mute.textContent = muted ? "🔇" : "🔊";
   // Restore the stored upload before asking the engine, so its reply can confirm or clear it.
-  if (data.activeUpload) activeUpload = { ...data.activeUpload, configId: data.activeUpload.config?.id, restored: true };
+  if (data.activeUpload) activeUpload = { ...data.activeUpload, transferId: data.activeUpload.transferId ?? data.activeUpload.sha, configId: data.activeUpload.config?.id, restored: true };
   refreshSendState();
   chrome.runtime.sendMessage({ target: "background", type: "ensureEngine" }).then(() => engineChannel.postMessage({ type: "hello" })).catch(() => {});
   checkBot();

@@ -41,7 +41,7 @@ def all_messages(discord):
 
 
 def known_keys():
-    """sha -> key from overshare-tokens.json (the extension's export format)."""
+    """transfer_id -> key from overshare-tokens.json (the extension's export format)."""
     try:
         data = json.loads(TOKENS_FILE.read_text(encoding="utf-8"))
     except (FileNotFoundError, ValueError):
@@ -54,7 +54,7 @@ def known_keys():
 def file_name(manifest, keys):
     if manifest.get("v") == 3:
         return manifest.get("name") or "?"
-    for key in (keys.get(manifest.get("sha")), OPEN_MASTER_KEY):
+    for key in (keys.get(manifest.get("transferId")), OPEN_MASTER_KEY):
         if not key:
             continue
         try:
@@ -67,7 +67,7 @@ def file_name(manifest, keys):
 
 def summarize(messages):
     keys = known_keys()
-    files, chunks, others = {}, {}, 0  # sha -> manifest, sha -> [count, bytes]
+    files, chunks, others = {}, {}, 0  # transfer_id -> manifest, transfer_id -> [count, bytes]
     total_bytes = 0
     for message in messages:
         attachments = message.get("attachments") or []
@@ -76,16 +76,18 @@ def summarize(messages):
         if content.startswith(MANIFEST_MARKER):
             try:
                 manifest = json.loads(content.split("\n", 1)[0][len(MANIFEST_MARKER):])
-                files[manifest["sha"]] = manifest
+                # Manifests before v5 call the transfer ID "sha".
+                manifest["transferId"] = manifest.get("transferId") or manifest["sha"]
+                files[manifest["transferId"]] = manifest
                 is_overshare = True
             except (ValueError, KeyError, TypeError):
                 pass
         for attachment in attachments:
             size = attachment.get("size") or 0
             total_bytes += size
-            sha, _, number = (attachment.get("filename") or "").rpartition(".")
-            if sha and number.isdigit():
-                entry = chunks.setdefault(sha, [0, 0])
+            transfer_id, _, number = (attachment.get("filename") or "").rpartition(".")
+            if transfer_id and number.isdigit():
+                entry = chunks.setdefault(transfer_id, [0, 0])
                 entry[0] += 1
                 entry[1] += size
                 is_overshare = True
@@ -95,12 +97,12 @@ def summarize(messages):
     print(f"{len(messages)} messages holding {human_size(total_bytes)} of attachments.")
     if files:
         print(f"\nFiles ({len(files)}):")
-        for sha, manifest in files.items():
-            count, size = chunks.get(sha, [0, 0])
+        for transfer_id, manifest in files.items():
+            count, size = chunks.get(transfer_id, [0, 0])
             missing = f", {int(manifest.get('total', 0)) - count} chunk(s) missing" if count < int(manifest.get("total", 0)) else ""
             print(f"  {file_name(manifest, keys)} · {human_size(int(manifest.get('originalSize', 0)))}"
                   f" · {count} chunk(s), {human_size(size)} on Discord{missing}")
-    unfinished = {sha: entry for sha, entry in chunks.items() if sha not in files}
+    unfinished = {transfer_id: entry for transfer_id, entry in chunks.items() if transfer_id not in files}
     if unfinished:
         count = sum(entry[0] for entry in unfinished.values())
         size = sum(entry[1] for entry in unfinished.values())

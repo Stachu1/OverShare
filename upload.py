@@ -61,8 +61,8 @@ def chunk_iv(prefix, index):
     return prefix + struct.pack(">I", index)
 
 
-def chunk_aad(sha, index, final):
-    return f"OVERSHARE2|{sha}|{index}|{1 if final else 0}".encode()
+def chunk_aad(transfer_id, index, final):
+    return f"OVERSHARE2|{transfer_id}|{index}|{1 if final else 0}".encode()
 
 
 def js_json(value):
@@ -71,7 +71,7 @@ def js_json(value):
 
 
 def manifest_tag(manifest, cipher, name):
-    aad = js_json(["OVERSHARE-MANIFEST", manifest["sha"], name, manifest["kind"],
+    aad = js_json(["OVERSHARE-MANIFEST", manifest["transferId"], name, manifest["kind"],
                    manifest["originalSize"], manifest["encryptedSize"], manifest["total"]]).encode()
     prefix = b64url_decode(manifest["iv"])
     return b64url_encode(cipher.encrypt(chunk_iv(prefix, 0xffffffff), b"", aad))
@@ -205,7 +205,7 @@ def upload_file(path, discord, open_channel=False):
     """Sends one file and returns its file token."""
     path = Path(path)
     size = path.stat().st_size
-    sha = secrets.token_hex(ID_BYTES)
+    transfer_id = secrets.token_hex(ID_BYTES)
     key = b64url_decode(OPEN_MASTER_KEY) if open_channel else secrets.token_bytes(32)
     cipher = AESGCM(key)
     prefix = secrets.token_bytes(8)
@@ -260,9 +260,9 @@ def upload_file(path, discord, open_channel=False):
     def send_piece(plain, final):
         state["index"] += 1
         index = state["index"]
-        ciphertext = cipher.encrypt(chunk_iv(prefix, index), bytes(plain), chunk_aad(sha, index, final))
+        ciphertext = cipher.encrypt(chunk_iv(prefix, index), bytes(plain), chunk_aad(transfer_id, index, final))
         state["encrypted"] += len(ciphertext)
-        filename = f"{sha}.{index}"
+        filename = f"{transfer_id}.{index}"
         if state["direct"]:
             try:
                 batch.append((filename, ciphertext, upload_direct(filename, ciphertext)))
@@ -302,7 +302,7 @@ def upload_file(path, discord, open_channel=False):
         drain(buffer)
         send_piece(buffer.data, True)
 
-        manifest = {"v": 4, "sha": sha, "name": path.name, "kind": "file", "originalSize": size,
+        manifest = {"v": 5, "transferId": transfer_id, "name": path.name, "kind": "file", "originalSize": size,
                     "encryptedSize": state["encrypted"], "total": state["index"], "iv": b64url_encode(prefix), "firstId": sent_ids[0]}
         manifest["title"] = b64url_encode(cipher.encrypt(chunk_iv(prefix, 0), path.name.encode(), b""))
         manifest["tag"] = manifest_tag(manifest, cipher, path.name)
@@ -318,17 +318,17 @@ def upload_file(path, discord, open_channel=False):
                 print(f"Could not delete message {message_id}: {error}", file=sys.stderr)
         raise
     print(file=sys.stderr)
-    return f"{sha}.{b64url_encode(key)}"
+    return f"{transfer_id}.{b64url_encode(key)}"
 
 
 def save_token(token):
     """Adds the token to the tokens file, in the extension's export format."""
-    sha, key = token.split(".")
+    transfer_id, key = token.split(".")
     try:
         tokens = json.loads(TOKENS_FILE.read_text(encoding="utf-8"))
     except FileNotFoundError:
         tokens = {}
-    tokens[f"{sha}.symmetricKey"] = key
+    tokens[f"{transfer_id}.symmetricKey"] = key
     TOKENS_FILE.write_text(json.dumps(tokens, indent=2) + "\n", encoding="utf-8")
 
 

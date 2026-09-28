@@ -123,6 +123,7 @@ Important security considerations:
 - Closing the popup does not stop transfers, but closing the browser does.
 - Interrupted or partial uploads are cleaned up when possible.
 - Transfers from versions before **4.0** are no longer downloadable.
+- Files sent with **5.27** or later use a newer manifest format that earlier versions don't list, so everyone downloading them needs 5.27 or later.
 - The file list and deletion system search up to the latest **10,000 messages**.
 - Folder downloads may be saved as a ZIP if the browser cannot maintain folder write access.
 

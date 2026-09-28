@@ -27,16 +27,26 @@ function chunkIv(prefix, index) {
   new DataView(iv.buffer).setUint32(8, index);
   return iv;
 }
-function chunkAad(sha, index, final) { return new TextEncoder().encode(`OVERSHARE2|${sha}|${index}|${final ? 1 : 0}`); }
+function chunkAad(transferId, index, final) { return new TextEncoder().encode(`OVERSHARE2|${transferId}|${index}|${final ? 1 : 0}`); }
 // Transfer IDs are random. Transfers sent before 4.8 have 64-character IDs and
 // no manifest tag.
 const ID_BYTES = 8;
 const LEGACY_ID_LENGTH = 64;
-// The manifest title is encrypted with the file key. v4 uses IV number 0 for
-// the title and the largest IV number for its integrity tag; neither is used
+// The manifest title is encrypted with the file key. v4 and later use IV number 0
+// for the title and the largest IV number for its integrity tag; neither is used
 // by a chunk. v3 keeps its old plaintext title and tag format.
+// v5 renamed the manifest's "sha" field to "transferId" (it was never a hash) and
+// changed nothing else. parseManifest reads every version into the v5 shape.
+const MANIFEST_VERSION = 5;
+function parseManifest(content) {
+  let manifest = null;
+  try { manifest = JSON.parse(content.split("\n", 1)[0].slice(MANIFEST_MARKER.length)); } catch (_) { return null; }
+  if (manifest?.v === 3 || manifest?.v === 4) { const { sha, ...rest } = manifest; manifest = { ...rest, transferId: sha }; }
+  else if (manifest?.v !== MANIFEST_VERSION) return null;
+  return typeof manifest.transferId === "string" ? manifest : null;
+}
 function manifestAad(manifest) {
-  return new TextEncoder().encode(JSON.stringify(["OVERSHARE-MANIFEST", manifest.sha, manifest.name, manifest.kind, manifest.originalSize, manifest.encryptedSize, manifest.total]));
+  return new TextEncoder().encode(JSON.stringify(["OVERSHARE-MANIFEST", manifest.transferId, manifest.name, manifest.kind, manifest.originalSize, manifest.encryptedSize, manifest.total]));
 }
 async function encryptManifestTitle(manifest, key) {
   const title = new TextEncoder().encode(manifest.name);
@@ -57,7 +67,7 @@ async function manifestTag(manifest, key) {
 }
 async function verifyManifest(manifest, key) {
   const failed = new Error("the file's details failed their integrity check (wrong file token, or the manifest was changed)");
-  if (!manifest.tag) { if (manifest.sha.length === LEGACY_ID_LENGTH) return; throw failed; }
+  if (!manifest.tag) { if (manifest.transferId.length === LEGACY_ID_LENGTH) return; throw failed; }
   try {
     await crypto.subtle.decrypt(manifestTagParams(manifest), key, base64urlDecode(manifest.tag));
   } catch (error) {
@@ -73,7 +83,7 @@ async function openManifest(manifest, key) {
 // Each configuration (a bot token and channel) keeps its own file tokens, stored
 // as "<config id>:<transfer id>.symmetricKey", and the token of its latest send
 // as "<config id>:lastFileToken".
-function tokenKey(configId, sha) { return `${configId}:${sha}.symmetricKey`; }
+function tokenKey(configId, transferId) { return `${configId}:${transferId}.symmetricKey`; }
 function lastTokenKey(configId) { return `${configId}:lastFileToken`; }
 // The file tokens ("<id>.<key>") stored for one configuration.
 function configTokens(data, configId) {
@@ -241,7 +251,7 @@ async function channelMessages(config) {
   return messages;
 }
 
-function shasFromTokens(tokens) {
+function transferIdsFromTokens(tokens) {
   return new Set(tokens.filter((token) => token.includes(".")).map((token) => token.split(".", 1)[0]));
 }
 
@@ -255,34 +265,33 @@ function shasFromTokens(tokens) {
 class TransferScanner {
   constructor(config, tokens) {
     this.config = config;
-    this.wanted = tokens ? shasFromTokens(tokens) : null; // null takes every transfer
-    this.keys = new Map((tokens || []).map((token) => [token.split(".", 1)[0], token.split(".", 2)[1]])); // sha -> key
+    this.wanted = tokens ? transferIdsFromTokens(tokens) : null; // null takes every transfer
+    this.keys = new Map((tokens || []).map((token) => [token.split(".", 1)[0], token.split(".", 2)[1]])); // transferId -> key
     this.queue = []; // { manifest, sentAt } with a manifest found, newest first, not handed out yet
-    this.parts = {}; // sha -> { chunk number: { url, size } }
-    this.seen = new Set(); // shas whose manifest was found
-    this.foreign = new Set(); // with every transfer taken: shas whose manifest the open key doesn't open
+    this.parts = {}; // transferId -> { chunk number: { url, size } }
+    this.seen = new Set(); // transferIds whose manifest was found
+    this.foreign = new Set(); // with every transfer taken: transferIds whose manifest the open key doesn't open
     this.before = null;
     this.pages = 0;
     this.ended = !!this.wanted && !this.wanted.size; // no more history to read, or none needed
     this.leftoversGiven = false;
   }
-  wants(sha) { return !this.wanted || this.wanted.has(sha); }
+  wants(transferId) { return !this.wanted || this.wanted.has(transferId); }
   get done() { return this.ended && !this.queue.length && this.leftoversGiven; }
   async readPage() {
     const batch = await messagePage(this.config, this.before);
     for (const message of batch) {
       const content = message.content || "";
       if (content.startsWith(MANIFEST_MARKER)) {
-        let manifest = null;
-        try { manifest = JSON.parse(content.split("\n", 1)[0].slice(MANIFEST_MARKER.length)); } catch (_) {}
-        if ((manifest?.v === 3 || manifest?.v === 4) && typeof manifest.sha === "string" && this.wants(manifest.sha) && !this.seen.has(manifest.sha) && !this.foreign.has(manifest.sha)) {
+        let manifest = parseManifest(content);
+        if (manifest && this.wants(manifest.transferId) && !this.seen.has(manifest.transferId) && !this.foreign.has(manifest.transferId)) {
           // A file sent to an open channel with a key of its own can't be opened here, so it isn't listed.
-          if (!this.wanted && !await opensWithOpenKey(manifest)) { this.foreign.add(manifest.sha); continue; }
+          if (!this.wanted && !await opensWithOpenKey(manifest)) { this.foreign.add(manifest.transferId); continue; }
           try {
-            const key = this.wanted ? await importChunkKey(this.keys.get(manifest.sha), "decrypt") : await openKey;
+            const key = this.wanted ? await importChunkKey(this.keys.get(manifest.transferId), "decrypt") : await openKey;
             manifest = await openManifest(manifest, key);
-          } catch (_) { this.foreign.add(manifest.sha); continue; }
-          this.seen.add(manifest.sha);
+          } catch (_) { this.foreign.add(manifest.transferId); continue; }
+          this.seen.add(manifest.transferId);
           this.queue.push({ manifest, sentAt: Date.parse(message.timestamp) || 0 });
         }
       }
@@ -296,7 +305,7 @@ class TransferScanner {
     if (batch.length < MESSAGE_PAGE || this.pages >= MAX_PAGES) this.ended = true;
   }
   chunksFound(manifest) {
-    const parts = this.parts[manifest.sha] || {};
+    const parts = this.parts[manifest.transferId] || {};
     let have = 0;
     for (let index = 1; index <= Number(manifest.total); index++) if (parts[index]) have++;
     return have;
@@ -307,7 +316,7 @@ class TransferScanner {
   }
   describe({ manifest, sentAt }) {
     const total = Number(manifest.total), have = this.chunksFound(manifest);
-    return { ...manifest, sentAt, parts: this.parts[manifest.sha] || {}, available: have === total, manifestFound: true, missingFile: false, missingChunks: total - have };
+    return { ...manifest, sentAt, parts: this.parts[manifest.transferId] || {}, available: have === total, manifestFound: true, missingFile: false, missingChunks: total - have };
   }
   // Returns up to count more files for the list, newest first.
   async next(count) {
@@ -321,11 +330,11 @@ class TransferScanner {
     }
     if (this.ended && !this.queue.length && !this.leftoversGiven && files.length < count) {
       this.leftoversGiven = true;
-      for (const sha of this.wanted || Object.keys(this.parts)) {
-        if (this.seen.has(sha)) continue;
+      for (const transferId of this.wanted || Object.keys(this.parts)) {
+        if (this.seen.has(transferId)) continue;
         // The manifest is posted last, so chunks without one are a send that never finished.
-        const orphanChunks = Object.keys(this.parts[sha] || {}).length;
-        files.push({ sha, name: orphanChunks ? "Unfinished upload" : "Unknown transfer", available: false, manifestFound: false, missingFile: !orphanChunks, missingChunks: null, orphanChunks });
+        const orphanChunks = Object.keys(this.parts[transferId] || {}).length;
+        files.push({ transferId, name: orphanChunks ? "Unfinished upload" : "Unknown transfer", available: false, manifestFound: false, missingFile: !orphanChunks, missingChunks: null, orphanChunks });
       }
     }
     return files;
@@ -339,14 +348,14 @@ async function findTransfer(config, token) {
   return file?.manifestFound ? { manifest: file, parts: file.parts } : null;
 }
 
-// Deletes every message that mentions one of the SHAs or carries one of their
+// Deletes every message that mentions one of the transfer IDs or carries one of their
 // chunks. onProgress receives the number deleted so far.
-async function deleteTransfers(config, shas, onProgress) {
-  const wanted = new Set(shas);
+async function deleteTransfers(config, transferIds, onProgress) {
+  const wanted = new Set(transferIds);
   if (!wanted.size) return 0;
   let deleted = 0;
   for (const message of await channelMessages(config)) {
-    const matches = [...wanted].some((sha) => (message.content || "").includes(sha))
+    const matches = [...wanted].some((transferId) => (message.content || "").includes(transferId))
       || (message.attachments || []).some((a) => (a.filename || "").includes(".") && wanted.has(a.filename.slice(0, a.filename.lastIndexOf("."))));
     if (matches) {
       await discordRequest(config, "DELETE", `/channels/${config.channelId}/messages/${message.id}`);
@@ -360,7 +369,7 @@ async function deleteTransfers(config, shas, onProgress) {
 // Yields each decrypted piece in order, so only one is in memory at a time.
 // onProgress receives (bytesDone, totalBytes) of the encrypted download.
 async function* decryptChunks(item, encodedKey, onProgress) {
-  const { sha, iv, total: totalText, encryptedSize } = item.manifest;
+  const { transferId, iv, total: totalText, encryptedSize } = item.manifest;
   const total = Number(totalText);
   const key = await importChunkKey(encodedKey, "decrypt");
   await verifyManifest(item.manifest, key);
@@ -391,7 +400,7 @@ async function* decryptChunks(item, encodedKey, onProgress) {
     for (const piece of pieces) { ciphertext.set(piece, offset); offset += piece.length; }
     pieces.length = 0;
     try {
-      yield new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: chunkIv(prefix, index), additionalData: chunkAad(sha, index, index === total) }, key, ciphertext));
+      yield new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: chunkIv(prefix, index), additionalData: chunkAad(transferId, index, index === total) }, key, ciphertext));
     } catch (error) {
       if (error.name === "OperationError") throw new Error(`chunk ${index} failed its integrity check (wrong file token, or the chunk was changed)`);
       throw error;
