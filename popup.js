@@ -196,6 +196,7 @@ function applyUploadState(state) {
     else if (state.canceling) setStatus(`Canceling upload… ${percent}%`, "info");
     else if (state.paused) setStatus("Upload paused after repeated errors. Resume when the connection is ready.", "warn");
     else if (state.retrying) setStatus(`Chunk ${state.retrying.chunk} got no answer from Discord. (attempt ${state.retrying.attempt}/${state.retrying.of}) · ${percent}%`, "info");
+    else if (state.fallback) setStatus(`Discord's upload API failed; defaulting to 1 chunk per message · ${percent}% · ${transferStats(state)}`, "warn");
     else setStatus(`Sending ${state.name || ""} · ${percent}% · ${transferStats(state)}`, "info");
     refreshSendState();
   } else if (activeUpload || state.outcome === "interrupted") {
@@ -206,7 +207,7 @@ function applyUploadState(state) {
     resetUploadProgress();
     refreshSendState();
     if (state.idle) return;
-    if (state.outcome === "ok") { clearSelection(); if (old.symmetricKey && old.configId === config.id) lastSentToken = `${old.sha}.${old.symmetricKey}`; playSound("send"); setStatus(`Sent ${state.name || old.name}${old.open ? " to the open channel" : ""}: ${humanSize(state.size || 0)} (${humanSize(state.speed || 0)}/s)`, "ok"); launchFlyer("🚀", "fly"); }
+    if (state.outcome === "ok") { clearSelection(); if (old.symmetricKey && old.configId === config.id) lastSentToken = `${old.sha}.${old.symmetricKey}`; playSound("send"); setStatus(`Sent ${state.name || old.name}${old.open ? " to the open channel" : ""}: ${humanSize(state.size || 0)} (${humanSize(state.speed || 0)}/s)${state.fallback ? " · 1 chunk per message, as Discord's upload API failed" : ""}`, "ok"); launchFlyer("🚀", "fly"); }
     else setStatus(state.text || "Upload failed", state.failed ? "err" : "info");
   }
 }

@@ -7,8 +7,13 @@
 const API = "https://discord.com/api/v10";
 const MANIFEST_MARKER = "OVERSHARE|";
 const CHUNK_BYTES = 20 * 1024 * 1024;
+const BATCH_CHUNKS = 10; // Discord takes up to 10 attachments per message
 const REQUEST_RETRY_ATTEMPTS = 5;
-const REQUEST_TIMEOUT_MS = 10000;
+// An upload fails when no bytes go out for UPLOAD_STALL_MS, or when no answer
+// comes RESPONSE_WAIT_MS after the whole body went out; a slow but moving upload
+// is never cut off.
+const UPLOAD_STALL_MS = 20000;
+const RESPONSE_WAIT_MS = 60000;
 
 // A transfer is one zip, streamed and cut into pieces that are each encrypted with
 // AES-GCM and uploaded as "<id>.<n>". The IV holds the piece number and the
@@ -159,24 +164,34 @@ async function discordRequest(config, method, path, { json, form, signal } = {})
   }
 }
 
-// Multipart POST through XMLHttpRequest, since fetch can't report upload
-// progress. onProgress receives the bytes of the body sent so far.
+// Sends a body through XMLHttpRequest, since fetch can't report upload progress.
+// onProgress receives the bytes of the body sent so far.
+function xhrSend(method, url, body, { headers = {}, signal, onProgress } = {}) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new DOMException("Upload canceled", "AbortError"));
+    const request = new XMLHttpRequest();
+    let timer = 0, timedOut = null;
+    const arm = (ms, message) => { clearTimeout(timer); timer = setTimeout(() => { timedOut = message; request.abort(); }, ms); };
+    const onAbort = () => request.abort();
+    const settle = (callback) => () => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); callback(); };
+    const stalled = `No bytes went out for ${UPLOAD_STALL_MS / 1000} seconds`;
+    request.open(method, url);
+    for (const [name, value] of Object.entries(headers)) request.setRequestHeader(name, value);
+    request.upload.onprogress = (event) => { arm(UPLOAD_STALL_MS, stalled); onProgress?.(event.loaded); };
+    request.upload.onload = () => arm(RESPONSE_WAIT_MS, `No answer ${RESPONSE_WAIT_MS / 1000} seconds after the upload finished`);
+    request.onload = settle(() => resolve(request));
+    request.onerror = settle(() => reject(Object.assign(new Error("Network error while uploading"), { network: true })));
+    request.onabort = settle(() => reject(timedOut ? Object.assign(new Error(timedOut), { network: true }) : new DOMException("Upload canceled", "AbortError")));
+    signal?.addEventListener("abort", onAbort, { once: true });
+    arm(UPLOAD_STALL_MS, stalled);
+    request.send(body);
+  });
+}
+
+// Multipart POST of a message with its files attached.
 async function discordUpload(config, path, form, { signal, onProgress } = {}) {
   for (;;) {
-    const xhr = await new Promise((resolve, reject) => {
-      const request = new XMLHttpRequest();
-      request.open("POST", `${API}${path}`);
-      request.timeout = REQUEST_TIMEOUT_MS;
-      request.setRequestHeader("Authorization", `Bot ${config.token}`);
-      request.upload.onprogress = (event) => onProgress?.(event.loaded);
-      request.onload = () => resolve(request);
-      request.onerror = () => reject(Object.assign(new Error("Network error while uploading"), { network: true }));
-      request.ontimeout = () => reject(Object.assign(new Error("Upload timed out after 10 seconds"), { network: true }));
-      request.onabort = () => reject(new DOMException("Upload canceled", "AbortError"));
-      if (signal?.aborted) return reject(new DOMException("Upload canceled", "AbortError"));
-      signal?.addEventListener("abort", () => request.abort(), { once: true });
-      request.send(form);
-    });
+    const xhr = await xhrSend("POST", `${API}${path}`, form, { headers: { "Authorization": `Bot ${config.token}` }, signal, onProgress });
     const data = parseJson(xhr.responseText);
     if (xhr.status === 429) {
       await new Promise((resolve) => setTimeout(resolve, Number(data?.retry_after || 1) * 1000));
@@ -185,6 +200,24 @@ async function discordUpload(config, path, form, { signal, onProgress } = {}) {
     if (xhr.status < 200 || xhr.status >= 300) throw discordError(xhr.status, data, xhr.statusText);
     return data;
   }
+}
+
+// Discord's upload API: a file is put straight into its storage, and a message
+// then names up to BATCH_CHUNKS stored files, so the message itself is tiny.
+// uploadSlot returns { upload_url, upload_filename } for one file.
+async function uploadSlot(config, filename, size, { signal } = {}) {
+  const data = await discordRequest(config, "POST", `/channels/${config.channelId}/attachments`,
+    { json: { files: [{ id: "0", filename, file_size: size }] }, signal });
+  const slot = data?.attachments?.[0];
+  if (!slot?.upload_url || !slot?.upload_filename) throw new Error("Discord gave no upload address");
+  return slot;
+}
+// The upload URL is signed storage, not the bot API, so it gets no bot token.
+// Putting the same file again is harmless, so any failure there may be retried.
+async function storageUpload(url, blob, { signal, onProgress } = {}) {
+  const xhr = await xhrSend("PUT", url, blob, { headers: { "Content-Type": "application/octet-stream" }, signal, onProgress });
+  if (xhr.status >= 200 && xhr.status < 300) return;
+  throw Object.assign(new Error(`storage answered HTTP ${xhr.status}`), { status: xhr.status, network: xhr.status === 429 || xhr.status >= 500 });
 }
 
 const MESSAGE_PAGE = 100;

@@ -52,7 +52,7 @@ function publish(send) { channel.postMessage({ type: "uploadState", send }); }
 function publishActive(extra = {}) {
 	lastPublish = performance.now();
 	const { speed, eta } = active.meter.update(active.bytesSent);
-	publish({ active: true, name: active.name, sent: active.sent, sending: active.sending, total: active.total, bytesSent: active.bytesSent, totalBytes: active.totalBytes, speed, eta, state: "sending", paused: !!active.paused, canceling: cancelRequested || active.cleaning, cleaning: active.cleaning, retrying: active.retrying || null, ...extra });
+	publish({ active: true, name: active.name, sent: active.sent, sending: active.sending, total: active.total, bytesSent: active.bytesSent, totalBytes: active.totalBytes, speed, eta, state: "sending", paused: !!active.paused, canceling: cancelRequested || active.cleaning, cleaning: active.cleaning, retrying: active.retrying || null, fallback: !!active.fallback, ...extra });
 }
 function throwIfCanceled() { if (cancelRequested) throw new DOMException("Upload canceled", "AbortError"); }
 
@@ -106,6 +106,12 @@ async function sendChecked(config, what, send, isSent, onRetry) {
 	}
 }
 
+// A cancel stays a cancel; anything else from the upload API marks it as not working.
+function directFailure(error) {
+	if (cancelRequested || error.name === "AbortError") return error;
+	return Object.assign(new Error(`Discord's upload API failed (${error.message})`), { directFailed: true, cause: error });
+}
+
 function cleanupFailureText(error) { return `removing the sent chunks failed (${error.message}). The partial file is in the Download list; delete it there.`; }
 
 // Collects zip output and hands it back in exact chunk-sized pieces.
@@ -153,9 +159,13 @@ async function uploadFiles(job) {
 	abortController = new AbortController();
 	const startedAt = performance.now();
 	const path = `/channels/${config.channelId}/messages`;
-	// Each chunk is its own message. The next chunk is compressed and encrypted
-	// while the current one uploads; at most one upload runs at a time.
+	// Each chunk is put straight into Discord's storage, and every BATCH_CHUNKS of
+	// them are posted as one message. If that upload API fails, the chunks stored
+	// but not posted yet and all later ones go the old way, one per message. The
+	// next chunk is compressed and encrypted while the current one uploads; at most
+	// one upload runs at a time.
 	let uploading = Promise.resolve(), uploadError = null;
+	let direct = true, batch = []; // chunks stored but not posted; their Blobs can go to disk
 	try {
 		// Stored first, so a browser restart mid-send can still find and remove the chunks.
 		await storage("set", { activeUpload: record });
@@ -174,38 +184,106 @@ async function uploadFiles(job) {
 			// Progress is counted in original bytes, spread over each chunk as it uploads.
 			const from = lastCutInput, to = final ? originalSize : inputRead;
 			lastCutInput = to;
-			const form = new FormData();
-			form.append("payload_json", JSON.stringify({}));
-			form.append("files[0]", new Blob([ciphertext]), `${sha}.${number}`);
+			const piece = { number, filename: `${sha}.${number}`, blob: new Blob([ciphertext]), bytes: ciphertext.byteLength, from, to, final };
 			await uploading;
 			if (uploadError) throw uploadError;
 			throwIfCanceled();
-			uploading = uploadPiece(form, number, from, to, ciphertext.byteLength).catch((error) => { uploadError = error; });
+			uploading = uploadPiece(piece).catch((error) => { uploadError = error; });
 		}
-		async function uploadPiece(form, number, from, to, bytes) {
-			active.sending = number;
+		async function uploadPiece(piece) {
+			active.sending = piece.number;
 			publishActive();
-			const filename = `${sha}.${number}`;
-			const message = await sendChecked(config, `chunk ${number}`,
-				() => discordUpload(config, path, form, {
-					signal: abortController.signal,
-					onProgress: (loaded) => {
-						active.bytesSent = from + (to - from) * Math.min(1, loaded / bytes);
-						if (performance.now() - lastPublish >= PUBLISH_INTERVAL_MS) publishActive();
-					},
-				}),
-				(sent) => (sent.attachments || []).some((a) => a.filename === filename && (!a.size || a.size === bytes)),
-				(attempt) => {
-					active.retrying = { chunk: number, attempt, of: SEND_ATTEMPTS };
-					active.bytesSent = from;
+			if (direct) {
+				try {
+					piece.uploaded = await storePiece(piece);
+					batch.push(piece);
+					active.sent = piece.number;
 					publishActive();
-				});
+					if (batch.length === BATCH_CHUNKS || piece.final) await postBatch();
+					return;
+				} catch (error) {
+					if (!error.directFailed) throw error;
+					direct = false;
+					active.fallback = true;
+					const pending = batch.includes(piece) ? batch : [...batch, piece];
+					batch = [];
+					for (const each of pending) await sendSingle(each);
+					return;
+				}
+			}
+			await sendSingle(piece);
+		}
+		const pieceProgress = (piece) => (loaded) => {
+			active.bytesSent = piece.from + (piece.to - piece.from) * Math.min(1, loaded / piece.bytes);
+			if (performance.now() - lastPublish >= PUBLISH_INTERVAL_MS) publishActive();
+		};
+		const onRetry = (piece) => (attempt) => {
+			active.retrying = { chunk: piece.number, attempt, of: SEND_ATTEMPTS };
+			active.bytesSent = piece.from;
+			publishActive();
+		};
+		function posted(message, piece) {
 			active.retrying = null;
 			if (!firstId) firstId = message?.id;
 			if (!firstId) throw new Error("Discord did not return the chunk message");
-			active.sent = number;
-			active.bytesSent = to;
+			active.sent = piece.number;
+			active.bytesSent = piece.to;
 			publishActive();
+		}
+		// Getting an upload address and putting the file there are safe to repeat, so
+		// they are retried without checking the channel. A failure that outlasts the
+		// retries is the upload API's, and sends the rest one chunk per message.
+		async function storePiece(piece) {
+			const signal = abortController.signal;
+			const retried = async (action) => {
+				for (let attempt = 1; ; attempt++) {
+					try { return await action(); }
+					catch (error) {
+						if (cancelRequested || !isUncertainFailure(error) || attempt >= SEND_ATTEMPTS) throw error;
+						onRetry(piece)(attempt + 1);
+						await sleep(SEND_RECHECK_MS);
+						throwIfCanceled();
+					}
+				}
+			};
+			try {
+				const slot = await retried(() => uploadSlot(config, piece.filename, piece.bytes, { signal }));
+				await retried(() => storageUpload(slot.upload_url, piece.blob, { signal, onProgress: pieceProgress(piece) }));
+				active.retrying = null;
+				active.bytesSent = piece.to;
+				return slot.upload_filename;
+			} catch (error) {
+				throw directFailure(error);
+			}
+		}
+		async function postBatch() {
+			const pieces = batch, last = pieces[pieces.length - 1];
+			const attachments = pieces.map((piece, i) => ({ id: String(i), filename: piece.filename, uploaded_filename: piece.uploaded }));
+			const what = pieces.length > 1 ? `chunks ${pieces[0].number}-${last.number}` : `chunk ${last.number}`;
+			let message;
+			try {
+				message = await sendChecked(config, what,
+					() => discordRequest(config, "POST", path, { json: { attachments }, signal: abortController.signal }),
+					(sent) => pieces.every((piece) => (sent.attachments || []).some((a) => a.filename === piece.filename)),
+					onRetry(last));
+			} catch (error) {
+				// sendChecked waits out a lost connection, so what reaches here is Discord refusing the stored files.
+				throw directFailure(error);
+			}
+			batch = [];
+			posted(message, last);
+		}
+		async function sendSingle(piece) {
+			active.sending = piece.number;
+			publishActive();
+			const form = new FormData();
+			form.append("payload_json", JSON.stringify({}));
+			form.append("files[0]", piece.blob, piece.filename);
+			const message = await sendChecked(config, `chunk ${piece.number}`,
+				() => discordUpload(config, path, form, { signal: abortController.signal, onProgress: pieceProgress(piece) }),
+				(sent) => (sent.attachments || []).some((a) => a.filename === piece.filename && (!a.size || a.size === piece.bytes)),
+				onRetry(piece));
+			posted(message, piece);
 		}
 		// Sends every full piece that can't be the last one; the last is sent after the zip ends.
 		async function drain() {
@@ -249,7 +327,7 @@ async function uploadFiles(job) {
 		await storage("set", { ...(config.open ? {} : { [tokenKey(config.id, sha)]: job.symmetricKey }), [lastTokenKey(config.id)]: `${sha}.${job.symmetricKey}` });
 		await storage("remove", ["activeUpload"]);
 		const seconds = (performance.now() - startedAt) / 1000;
-		publish({ active: false, outcome: "ok", name, total: index, size: originalSize, speed: seconds > 0 ? originalSize / seconds : 0 });
+		publish({ active: false, outcome: "ok", name, total: index, size: originalSize, speed: seconds > 0 ? originalSize / seconds : 0, fallback: !direct });
 	} catch (error) {
 		const canceled = cancelRequested || error.name === "AbortError";
 		active.cleaning = true;

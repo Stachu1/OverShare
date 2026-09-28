@@ -14,7 +14,7 @@ No separate server or software is required.
 1. A random transfer ID and **AES-256** encryption key are generated.
 2. Files are streamed and compressed into a ZIP while preserving folder paths.
 3. The ZIP is split into **20 MB chunks**.
-4. Each chunk is encrypted with AES-256-GCM and uploaded to your Discord channel.
+4. Each chunk is encrypted with AES-256-GCM and uploaded to your Discord channel, up to **10 chunks per message** (Discord's upload API puts each chunk into its storage first). If that API fails, the rest of the transfer falls back to one chunk per message.
 5. A manifest containing the file metadata is uploaded after the chunks.
 6. The resulting **file token** (`<id>.<key>`) is required to decrypt the file.
 
@@ -44,6 +44,7 @@ Go to the [Discord Developer Portal](https://discord.com/developers/applications
   - Attach Files
   - Read Message History
   - Manage Channels (only needed to let OverShare create channels for you)
+  - Manage Messages (optional, lets `clear_channel.py` delete in bulk)
 - Add the bot only to your OverShare server.
 
 ### 3. Get the Channel ID
@@ -83,7 +84,17 @@ pip install requests cryptography
 BOT_TOKEN=... CHANNEL_ID=... python upload.py file.mp4
 ```
 
-It prints the file token and adds it to `overshare-tokens.json` next to the script. Load that file with **Import Tokens**, or paste the single token into the Download tab, while the configuration with the same bot and channel is selected. Keep the tokens file private. To an open channel (its name starts with `open_`) it sends with the shared key instead, saves no token, and the file shows up in the Download list for everyone.
+It uploads with the same 10-chunks-per-message method and fallback, prints the file token and adds it to `overshare-tokens.json` next to the script. Load that file with **Import Tokens**, or paste the single token into the Download tab, while the configuration with the same bot and channel is selected. Keep the tokens file private. To an open channel (its name starts with `open_`) it sends with the shared key instead, saves no token, and the file shows up in the Download list for everyone.
+
+### Clearing a channel
+
+`clear_channel.py` asks for the bot token and channel ID, lists the OverShare files in the channel (named when the channel is open or the file's token is in `overshare-tokens.json`), unfinished uploads, other messages and their total size, and deletes every message once you type the channel name to confirm:
+
+```sh
+python clear_channel.py
+```
+
+Messages younger than two weeks are deleted in bulk when the bot has **Manage Messages**; otherwise one at a time, which is much slower.
 
 ## Security
 
@@ -106,7 +117,7 @@ Important security considerations:
 
 ## Limits and Notes
 
-- Chunks are **20 MB**. Discord/server upload limits may require a smaller size.
+- Chunks are **20 MB**, up to 10 per message. Discord/server upload limits may require a smaller size.
 - Large transfers use streaming to reduce memory usage.
 - Discord rate limits may slow transfers; OverShare automatically retries.
 - Closing the popup does not stop transfers, but closing the browser does.
@@ -127,6 +138,7 @@ Important security considerations:
 | `shared.js` | Discord API, transfer, and decryption utilities |
 | `fflate.js` | ZIP/compression library |
 | `upload.py` | Command-line sender, same format as the extension |
+| `clear_channel.py` | Deletes every message in a channel after showing what is there |
 
 ## Disclaimer
 

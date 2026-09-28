@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "OverShare",
-  "version": "5.24.0",
+  "version": "5.25.0",
   "description": "Send large files and folders through your own Discord bot: streamed, compressed, AES-256 encrypted and split into chunks.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAh9N7g1ZyUW5RoOVnNes4bvX3xsaBl07hItvLipjfeGpYrzdzN6w9tJRmHtnBD6i76uWPyWFVhMiDAm0NRdYlziNYFXSudjB45FXOPz2EWDolQlJbmmn0s1vreQNrX6/rjKWY/zb/9QPaAqNHbgcYibZSPVblbjOv7+/a2xsQAE4zk79A57R25857PJ/OG7K0uD+ewwttMsbsu/bfHWnSnj6A6AWfM8fFB5FFQiUaiTrDM/lrtb4KNFvOyvpA52djwH04OcNDcY35kzK8a++YwrQeJkei7RFKlrZF8uRc9yz8jZvK2KcIxDpp4Th8gtxgp4UC1cBvUjnIpnMouVpWuQIDAQAB",
   "action": {
@@ -12,7 +12,7 @@
   "background": {
     "service_worker": "background.js"
   },
-  "host_permissions": ["https://discord.com/*", "https://cdn.discordapp.com/*", "https://media.discordapp.net/*"],
+  "host_permissions": ["https://discord.com/*", "https://discord-attachments-uploads-prd.storage.googleapis.com/*", "https://cdn.discordapp.com/*", "https://media.discordapp.net/*"],
   "declarative_net_request": {
     "rule_resources": [{ "id": "discord_user_agent", "enabled": true, "path": "rules.json" }]
   },
