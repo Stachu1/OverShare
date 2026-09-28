@@ -4,7 +4,9 @@
 
 The file is zipped, cut into 20 MB pieces, encrypted with AES-256-GCM and uploaded
 through the bot, then a manifest is posted, all in the same format as the
-extension, so the file shows up in its Download list. The file token
+extension, so the file shows up in its Download list. Each piece is put straight
+into Discord's storage and up to 10 of them are then posted as one message; if
+that upload API fails, the rest go the old way, one piece per message. The file token
 ("<id>.<key>") is printed and added to overshare-tokens.json next to this script,
 which the extension's Import Tokens button reads.
 
@@ -33,6 +35,7 @@ API = "https://discord.com/api/v10"
 USER_AGENT = "DiscordBot (overshare, 3.0)"  # Discord rejects bot requests with other agents
 MANIFEST_MARKER = "OVERSHARE|"
 CHUNK_BYTES = 20 * 1024 * 1024
+BATCH_CHUNKS = 10  # Discord takes up to 10 attachments per message
 PLAIN_CHUNK_BYTES = CHUNK_BYTES - 16  # AES-GCM adds a 16-byte tag
 READ_SLICE_BYTES = 4 * 1024 * 1024
 ID_BYTES = 8
@@ -78,6 +81,10 @@ class UncertainFailure(Exception):
     """The request may or may not have reached Discord."""
 
 
+class DirectUploadFailed(Exception):
+    """Discord's upload-to-storage API didn't work, so pieces go one per message."""
+
+
 class Discord:
     def __init__(self, token, channel_id):
         self.channel = f"{API}/channels/{channel_id}"
@@ -103,7 +110,9 @@ class Discord:
                     data = response.json()
                 except ValueError:
                     data = {}
-                raise RuntimeError(f"Discord {response.status_code}: {data.get('message', response.reason)}")
+                error = RuntimeError(f"Discord {response.status_code}: {data.get('message', response.reason)}")
+                error.status = response.status_code
+                raise error
             return None if response.status_code == 204 else response.json()
 
     def channel_name(self):
@@ -115,6 +124,29 @@ class Discord:
     def send_chunk(self, filename, data):
         files = {"files[0]": (filename, data, "application/octet-stream")}
         return self.request("POST", self.path, data={"payload_json": "{}"}, files=files)
+
+    def upload_slot(self, filename, size):
+        """Asks Discord where to put a file; returns its upload_url and upload_filename."""
+        data = self.request("POST", f"{self.channel}/attachments",
+                            json={"files": [{"id": "0", "filename": filename, "file_size": size}]})
+        return data["attachments"][0]
+
+    def put_upload(self, url, data):
+        # The URL is signed storage, not the bot API, so it gets no bot token.
+        try:
+            response = requests.put(url, data=data, headers={"Content-Type": "application/octet-stream"}, timeout=300)
+        except (requests.ConnectionError, requests.Timeout) as error:
+            raise UncertainFailure(str(error)) from error
+        if response.status_code >= 500 or response.status_code == 429:
+            raise UncertainFailure(f"storage {response.status_code}")
+        if not response.ok:
+            raise RuntimeError(f"storage {response.status_code}: {response.text[:200]}")
+
+    def send_uploaded(self, files):
+        """Posts one message with the (filename, upload_filename) pairs already in storage."""
+        attachments = [{"id": str(i), "filename": filename, "uploaded_filename": uploaded}
+                       for i, (filename, uploaded) in enumerate(files)]
+        return self.request("POST", self.path, json={"attachments": attachments})
 
     def send_message(self, content):
         return self.request("POST", self.path, json={"content": content})
@@ -135,6 +167,17 @@ def send_checked(discord, what, send, is_sent):
             if attempt == SEND_ATTEMPTS:
                 raise RuntimeError(f"{what} could not be sent after {SEND_ATTEMPTS} attempts ({error})") from error
             print(f"\n{what} failed ({error}), sending again ({attempt + 1}/{SEND_ATTEMPTS})", file=sys.stderr)
+
+
+def retried(action):
+    """Runs an action that is safe to repeat, again after an uncertain failure."""
+    for attempt in range(1, SEND_ATTEMPTS + 1):
+        try:
+            return action()
+        except UncertainFailure:
+            if attempt == SEND_ATTEMPTS:
+                raise
+            time.sleep(SEND_RECHECK_SECONDS * attempt)
 
 
 def human_size(n):
@@ -167,8 +210,52 @@ def upload_file(path, discord, open_channel=False):
     cipher = AESGCM(key)
     prefix = secrets.token_bytes(8)
     sent_ids = []
-    state = {"index": 0, "encrypted": 0, "read": 0}
+    batch = []  # (filename, ciphertext, upload_filename) stored but not posted yet
+    state = {"index": 0, "encrypted": 0, "read": 0, "direct": True}
     started = time.monotonic()
+
+    def report(index, final):
+        elapsed = time.monotonic() - started
+        done = size if final else state["read"]
+        print(f"\rchunk {index} sent · {human_size(done)} / {human_size(size)} · {human_size(done / elapsed if elapsed else 0)}/s   ",
+              end="", file=sys.stderr, flush=True)
+
+    def sent(message):
+        sent_ids.append(message["id"])
+
+    def send_single(filename, ciphertext):
+        sent(send_checked(discord, f"chunk {filename.rsplit('.', 1)[1]}", lambda: discord.send_chunk(filename, ciphertext),
+                          lambda m: any(a.get("filename") == filename and a.get("size") in (None, len(ciphertext))
+                                        for a in m.get("attachments") or [])))
+
+    def upload_direct(filename, ciphertext):
+        try:
+            slot = retried(lambda: discord.upload_slot(filename, len(ciphertext)))
+            retried(lambda: discord.put_upload(slot["upload_url"], ciphertext))
+            return slot["upload_filename"]
+        except (UncertainFailure, RuntimeError, KeyError, IndexError, TypeError) as error:
+            raise DirectUploadFailed(error) from error
+
+    def post_batch():
+        names = [filename for filename, _, _ in batch]
+        try:
+            sent(send_checked(discord, f"chunks {names[0].rsplit('.', 1)[1]}-{names[-1].rsplit('.', 1)[1]}",
+                              lambda: discord.send_uploaded([(filename, uploaded) for filename, _, uploaded in batch]),
+                              lambda m: {a.get("filename") for a in m.get("attachments") or []} >= set(names)))
+        except RuntimeError as error:
+            # A 4xx here means Discord refused the stored files; a failure to reach it at all ends the send.
+            if isinstance(error.__cause__, UncertainFailure):
+                raise
+            raise DirectUploadFailed(error) from error
+        batch.clear()
+
+    def fall_back(error):
+        state["direct"] = False
+        print(f"\nDiscord's upload API failed ({error}); defaulting to 1 chunk per message.", file=sys.stderr)
+        # Pieces already stored but not posted are sent again the old way, in order.
+        for filename, ciphertext, _ in batch:
+            send_single(filename, ciphertext)
+        batch.clear()
 
     def send_piece(plain, final):
         state["index"] += 1
@@ -176,14 +263,21 @@ def upload_file(path, discord, open_channel=False):
         ciphertext = cipher.encrypt(chunk_iv(prefix, index), bytes(plain), chunk_aad(sha, index, final))
         state["encrypted"] += len(ciphertext)
         filename = f"{sha}.{index}"
-        message = send_checked(discord, f"chunk {index}", lambda: discord.send_chunk(filename, ciphertext),
-                               lambda m: any(a.get("filename") == filename and a.get("size") in (None, len(ciphertext))
-                                             for a in m.get("attachments") or []))
-        sent_ids.append(message["id"])
-        elapsed = time.monotonic() - started
-        done = size if final else state["read"]
-        print(f"\rchunk {index} sent · {human_size(done)} / {human_size(size)} · {human_size(done / elapsed if elapsed else 0)}/s   ",
-              end="", file=sys.stderr, flush=True)
+        if state["direct"]:
+            try:
+                batch.append((filename, ciphertext, upload_direct(filename, ciphertext)))
+                if len(batch) == BATCH_CHUNKS or final:
+                    post_batch()
+                report(index, final)
+                return
+            except DirectUploadFailed as error:
+                stored = any(name == filename for name, _, _ in batch)
+                fall_back(error)
+                if stored:
+                    report(index, final)
+                    return
+        send_single(filename, ciphertext)
+        report(index, final)
 
     def drain(buffer):
         # The last piece is only known once the zip ends, so a piece that could be it is held back.
