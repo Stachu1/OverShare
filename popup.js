@@ -254,7 +254,8 @@ function audio() {
 }
 try { audio(); } catch (_) {}
 document.addEventListener("pointerdown", () => { try { audio(); } catch (_) {} }, true);
-function playTone(frequency, duration, delay = 0, { type = "sine", volume = 0.04 } = {}) {
+// A tone can glide to an end frequency, and a shorter attack makes it snappier.
+function playTone(frequency, duration, delay = 0, { type = "sine", volume = 0.04, attack = 0.01, glideTo = null } = {}) {
   if (muted) return;
   try {
     audio();
@@ -262,9 +263,10 @@ function playTone(frequency, duration, delay = 0, { type = "sine", volume = 0.04
     const oscillator = audioContext.createOscillator();
     const gain = audioContext.createGain();
     oscillator.type = type;
-    oscillator.frequency.value = frequency;
+    oscillator.frequency.setValueAtTime(frequency, start);
+    if (glideTo) oscillator.frequency.exponentialRampToValueAtTime(glideTo, start + duration);
     gain.gain.setValueAtTime(0.0001, start);
-    gain.gain.linearRampToValueAtTime(volume, start + 0.01);
+    gain.gain.linearRampToValueAtTime(volume, start + attack);
     gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
     oscillator.connect(gain).connect(audioContext.destination);
     oscillator.start(start);
@@ -273,12 +275,19 @@ function playTone(frequency, duration, delay = 0, { type = "sine", volume = 0.04
 }
 function playSound(name) {
   if (name === "hover") playTone(1200, 0.018);
-  if (name === "click") playTone(720, 0.035);
-  if (name === "send") { playTone(523, 0.1); playTone(659, 0.1, 0.09); playTone(784, 0.14, 0.18); }
-  if (name === "download") { playTone(784, 0.1); playTone(523, 0.16, 0.1); }
-  if (name === "connected") { playTone(880, 0.08); playTone(1175, 0.16, 0.08); }
-  // A buzzy sawtooth, louder than the other sounds, so a failure is hard to miss.
-  if (name === "failed") { const buzz = { type: "sawtooth", volume: 0.09 }; playTone(311, 0.13, 0, buzz); playTone(208, 0.3, 0.14, buzz); }
+  // An instant attack and a fast pitch drop make a crisp tick.
+  if (name === "click") playTone(2200, 0.012, 0, { type: "triangle", volume: 0.06, attack: 0.001, glideTo: 900 });
+  if (name === "send") { const loud = { volume: 0.08 }; playTone(523, 0.1, 0, loud); playTone(659, 0.1, 0.09, loud); playTone(784, 0.16, 0.18, loud); }
+  // A bright rising sixth with a ringing top note, as loud as send.
+  if (name === "download") { const bell = { type: "triangle", volume: 0.1 }; playTone(784, 0.1, 0, bell); playTone(1319, 0.35, 0.09, bell); playTone(659, 0.35, 0.09, { volume: 0.03 }); }
+  if (name === "connected") { const loud = { volume: 0.07 }; playTone(880, 0.12, 0, loud); playTone(1175, 0.45, 0.1, loud); }
+  // Two drooping notes, louder than the other sounds so a failure is hard to miss; the
+  // pitch slides down and a soft octave below warms the tone.
+  if (name === "failed") {
+    const droop = { type: "triangle", volume: 0.14 };
+    playTone(349, 0.16, 0, { ...droop, glideTo: 330 }); playTone(175, 0.16, 0, { volume: 0.06, glideTo: 165 });
+    playTone(262, 0.42, 0.15, { ...droop, glideTo: 220 }); playTone(131, 0.42, 0.15, { volume: 0.06, glideTo: 110 });
+  }
 }
 let hoveredButton = null;
 document.addEventListener("mouseover", (event) => { const button = event.target.closest("button"); if (button && button !== hoveredButton) { hoveredButton = button; playSound("hover"); } });
