@@ -784,14 +784,14 @@ els.deleteTokens.addEventListener("click", async () => {
   els.downloadToken.value = "";
   startDelete([...transferIdsFromTokens(tokens)], `${tokens.length} file(s)`);
 });
-const THEMES = [{ name: "default", icon: "🌗", label: "Default" }, { name: "light", icon: "☀️", label: "Light" }, { name: "black", icon: "🌑", label: "Super dark" }];
+const THEMES = [{ name: "default", icon: "🌗", label: "Default" }, { name: "light", icon: "☀️", label: "Light" }, { name: "dark", icon: "🌑", label: "Very dark" }];
 function applyTheme(name) {
   const theme = THEMES.find((item) => item.name === name) || THEMES[0];
   if (theme.name === "default") delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = theme.name;
   els.theme.textContent = theme.icon;
   els.theme.dataset.theme = theme.name;
-  els.theme.dataset.tip = `Theme: ${theme.label}. Click to switch to default, light or super dark`;
+  els.theme.dataset.tip = `Theme: ${theme.label}. Click to switch to default, light or very dark`;
 }
 els.theme.addEventListener("click", () => {
   const index = THEMES.findIndex((item) => item.name === els.theme.dataset.theme);

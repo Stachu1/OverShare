@@ -2,7 +2,7 @@
 
 OverShare is a Chrome extension for sending large files and folders through Discord with your own bot. Files are compressed, encrypted in the browser with **AES-256-GCM**, split into chunks and uploaded to a Discord channel. No server or other software is needed.
 
-<img width="400" height="640" alt="image" src="https://github.com/user-attachments/assets/30ef4129-3cd4-4096-bc79-fe21474e0dcd" />
+<img width="386" height="632" alt="image" src="https://github.com/user-attachments/assets/cc297b73-ebd3-4100-a9e9-820c2c0f1545" />
 
 ## How It Works
 
