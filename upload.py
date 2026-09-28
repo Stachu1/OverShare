@@ -49,7 +49,7 @@ OPEN_MASTER_KEY = "LlSzLppn9IsvmOWEB7yTjeZYvVqoAYD-IL-KyZ_lm6s"
 TOKENS_FILE = Path(__file__).resolve().parent / "overshare-tokens.json"
 
 
-def b64url(data):
+def b64url_encode(data):
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
@@ -74,7 +74,7 @@ def manifest_tag(manifest, cipher, name):
     aad = js_json(["OVERSHARE-MANIFEST", manifest["sha"], name, manifest["kind"],
                    manifest["originalSize"], manifest["encryptedSize"], manifest["total"]]).encode()
     prefix = b64url_decode(manifest["iv"])
-    return b64url(cipher.encrypt(chunk_iv(prefix, 0xffffffff), b"", aad))
+    return b64url_encode(cipher.encrypt(chunk_iv(prefix, 0xffffffff), b"", aad))
 
 
 class UncertainFailure(Exception):
@@ -303,8 +303,8 @@ def upload_file(path, discord, open_channel=False):
         send_piece(buffer.data, True)
 
         manifest = {"v": 4, "sha": sha, "name": path.name, "kind": "file", "originalSize": size,
-                    "encryptedSize": state["encrypted"], "total": state["index"], "iv": b64url(prefix), "firstId": sent_ids[0]}
-        manifest["title"] = b64url(cipher.encrypt(chunk_iv(prefix, 0), path.name.encode(), b""))
+                    "encryptedSize": state["encrypted"], "total": state["index"], "iv": b64url_encode(prefix), "firstId": sent_ids[0]}
+        manifest["title"] = b64url_encode(cipher.encrypt(chunk_iv(prefix, 0), path.name.encode(), b""))
         manifest["tag"] = manifest_tag(manifest, cipher, path.name)
         del manifest["name"]
         content = MANIFEST_MARKER + js_json(manifest)
@@ -318,7 +318,7 @@ def upload_file(path, discord, open_channel=False):
                 print(f"Could not delete message {message_id}: {error}", file=sys.stderr)
         raise
     print(file=sys.stderr)
-    return f"{sha}.{b64url(key)}"
+    return f"{sha}.{b64url_encode(key)}"
 
 
 def save_token(token):

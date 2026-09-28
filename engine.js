@@ -19,116 +19,114 @@ const PUBLISH_INTERVAL_MS = 250;
 // isn't there, up to this many attempts in all.
 const SEND_ATTEMPTS = REQUEST_RETRY_ATTEMPTS;
 const SEND_RECHECK_MS = 1000;
-const channel = new BroadcastChannel(ENGINE_CHANNEL);
+const engineChannel = new BroadcastChannel(ENGINE_CHANNEL);
 
-let active = null;          // the upload, or the cleanup of one
+let activeUpload = null;    // the upload, or the cleanup of one
 let cancelRequested = false;
 let abortController = null;
 let resumeUpload = null;
-let lastPublish = 0;
+let lastUploadPublish = 0;
 let activeDownload = null;
 let lastDownloadPublish = 0;
 let deleteJobs = [];        // queued and running deletes, run one at a time
 let deleteQueue = Promise.resolve();
 
 function background(message) {
-	return new Promise((resolve, reject) => {
-		chrome.runtime.sendMessage({ target: "background", ...message }, (response) => {
-			if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
-			if (response?.error) return reject(new Error(response.error));
-			resolve(response);
-		});
-	});
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ target: "background", ...message }, (response) => {
+      if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+      if (response?.error) return reject(new Error(response.error));
+      resolve(response);
+    });
+  });
 }
 async function storage(operation, value) {
-	const response = await background({ type: "storage", operation, ...(operation === "set" ? { items: value } : { keys: value }) });
-	return response.result;
+  const response = await background({ type: "storage", operation, ...(operation === "set" ? { items: value } : { keys: value }) });
+  return response.result;
 }
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ---- Uploads ----
 
-function publish(send) { channel.postMessage({ type: "uploadState", send }); }
-function publishActive(extra = {}) {
-	lastPublish = performance.now();
-	const { speed, eta } = active.meter.update(active.bytesSent);
-	publish({ active: true, name: active.name, sent: active.sent, sending: active.sending, total: active.total, bytesSent: active.bytesSent, totalBytes: active.totalBytes, speed, eta, state: "sending", paused: !!active.paused, canceling: cancelRequested || active.cleaning, cleaning: active.cleaning, retrying: active.retrying || null, fallback: !!active.fallback, ...extra });
+function publishUpload(state) { engineChannel.postMessage({ type: "uploadState", state }); }
+function publishActiveUpload() {
+  lastUploadPublish = performance.now();
+  const { speed, eta } = activeUpload.meter.update(activeUpload.bytesSent);
+  publishUpload({ active: true, name: activeUpload.name, sent: activeUpload.sent, bytesSent: activeUpload.bytesSent, totalBytes: activeUpload.totalBytes, speed, eta, paused: !!activeUpload.paused, canceling: cancelRequested || activeUpload.cleaning, cleaning: activeUpload.cleaning, retrying: activeUpload.retrying || null, fallback: !!activeUpload.fallback });
 }
 function throwIfCanceled() { if (cancelRequested) throw new DOMException("Upload canceled", "AbortError"); }
 
 // Deletes everything a partial send left behind. If that fails, the file token is
 // kept so the partial file shows in the Download list and can be deleted there.
 async function cleanUpUpload(record) {
-	try {
-		await deleteTransfers(record.config, [record.sha]);
-		await sleep(CLEANUP_RECHECK_MS);
-		await deleteTransfers(record.config, [record.sha]);
-		return null;
-	} catch (error) {
-		await storage("set", { [tokenKey(record.config.id, record.sha)]: record.symmetricKey }).catch(() => {});
-		return error;
-	}
+  try {
+    await deleteTransfers(record.config, [record.sha]);
+    await sleep(CLEANUP_RECHECK_MS);
+    await deleteTransfers(record.config, [record.sha]);
+    return null;
+  } catch (error) {
+    await storage("set", { [tokenKey(record.config.id, record.sha)]: record.symmetricKey }).catch(() => {});
+    return error;
+  }
 }
 function isUncertainFailure(error) {
-	return error.name !== "AbortError" && (error.network || error instanceof TypeError || [502, 503, 504].includes(error.status));
+  return error.name !== "AbortError" && (error.network || error instanceof TypeError || [502, 503, 504].includes(error.status));
 }
 async function waitForUploadResume() {
-	active.paused = true;
-	active.retrying = null;
-	publishActive();
-	await new Promise((resolve) => { resumeUpload = resolve; });
-	resumeUpload = null;
-	active.meter = new TransferMeter(active.totalBytes);
-	active.paused = false;
-	publishActive();
+  activeUpload.paused = true;
+  activeUpload.retrying = null;
+  publishActiveUpload();
+  await new Promise((resolve) => { resumeUpload = resolve; });
+  resumeUpload = null;
+  activeUpload.meter = new TransferMeter(activeUpload.totalBytes);
+  activeUpload.paused = false;
+  publishActiveUpload();
 }
 // Runs send(); after an uncertain failure, looks for the message among the newest
 // ones in the channel (isSent tells if one is it) and returns that, or sends again.
-async function sendChecked(config, what, send, isSent, onRetry) {
-	for (let attempt = 1; ; attempt++) {
-		try { return await send(); }
-		catch (error) {
-			if (cancelRequested || !isUncertainFailure(error)) throw error;
-			await sleep(SEND_RECHECK_MS);
-			throwIfCanceled();
-			const found = (await messagePage(config, null).catch(() => [])).find(isSent);
-			if (found) return found;
-			if (attempt >= SEND_ATTEMPTS) {
-				if (active && isUncertainFailure(error)) {
-					await waitForUploadResume();
-					attempt = 0;
-					continue;
-				}
-				throw new Error(`${what} could not be sent after ${SEND_ATTEMPTS} attempts (${errogitr.message})`);
-			}
-			onRetry?.(attempt + 1, error);
-		}
-	}
+// Once SEND_ATTEMPTS have failed, the upload pauses until the popup resumes it.
+async function sendChecked(config, send, isSent, onRetry) {
+  for (let attempt = 1; ; attempt++) {
+    try { return await send(); }
+    catch (error) {
+      if (cancelRequested || !isUncertainFailure(error)) throw error;
+      await sleep(SEND_RECHECK_MS);
+      throwIfCanceled();
+      const found = (await messagePage(config, null).catch(() => [])).find(isSent);
+      if (found) return found;
+      if (attempt >= SEND_ATTEMPTS) {
+        await waitForUploadResume();
+        attempt = 0;
+        continue;
+      }
+      onRetry?.(attempt + 1, error);
+    }
+  }
 }
 
 // A cancel stays a cancel; anything else from the upload API marks it as not working.
 function directFailure(error) {
-	if (cancelRequested || error.name === "AbortError") return error;
-	return Object.assign(new Error(`Discord's upload API failed (${error.message})`), { directFailed: true, cause: error });
+  if (cancelRequested || error.name === "AbortError") return error;
+  return Object.assign(new Error(`Discord's upload API failed (${error.message})`), { directFailed: true, cause: error });
 }
 
 function cleanupFailureText(error) { return `removing the sent chunks failed (${error.message}). The partial file is in the Download list; delete it there.`; }
 
 // Collects zip output and hands it back in exact chunk-sized pieces.
 class ByteQueue {
-	constructor() { this.parts = []; this.length = 0; }
-	push(data) { if (data.length) { this.parts.push(data); this.length += data.length; } }
-	take(count) {
-		const out = new Uint8Array(count);
-		let offset = 0;
-		while (offset < count) {
-			const part = this.parts[0], need = count - offset;
-			if (part.length <= need) { out.set(part, offset); offset += part.length; this.parts.shift(); }
-			else { out.set(part.subarray(0, need), offset); this.parts[0] = part.subarray(need); offset = count; }
-		}
-		this.length -= count;
-		return out;
-	}
+  constructor() { this.parts = []; this.length = 0; }
+  push(data) { if (data.length) { this.parts.push(data); this.length += data.length; } }
+  take(count) {
+    const out = new Uint8Array(count);
+    let offset = 0;
+    while (offset < count) {
+      const part = this.parts[0], need = count - offset;
+      if (part.length <= need) { out.set(part, offset); offset += part.length; this.parts.shift(); }
+      else { out.set(part.subarray(0, need), offset); this.parts[0] = part.subarray(need); offset = count; }
+    }
+    this.length -= count;
+    return out;
+  }
 }
 // Zip timestamps can't go before 1980.
 function zipTime(file) { return new Date(Math.max(file.lastModified || 0, Date.UTC(1980, 0, 2))); }
@@ -137,404 +135,399 @@ function zipTime(file) { return new Date(Math.max(file.lastModified || 0, Date.U
 // compression buffer included, until the zip ends, which for a folder of
 // thousands of files is hundreds of MB.
 function zipEntry(path, file) {
-	const entry = new fflate.ZipPassThrough(path);
-	entry.compression = 8; // deflate
-	entry.flag = 0;        // header flag for a normal compression level
-	entry.mtime = zipTime(file);
-	let deflate = new fflate.Deflate({ level: 6 }, (data, final) => {
-		if (final) deflate = null;
-		entry.ondata(null, data, final);
-	});
-	entry.process = (data, final) => {
-		try { deflate.push(data, final); } catch (error) { entry.ondata(error, null, final); }
-	};
-	return entry;
+  const entry = new fflate.ZipPassThrough(path);
+  entry.compression = 8; // deflate
+  entry.flag = 0;        // header flag for a normal compression level
+  entry.mtime = zipTime(file);
+  let deflate = new fflate.Deflate({ level: 6 }, (data, final) => {
+    if (final) deflate = null;
+    entry.ondata(null, data, final);
+  });
+  entry.process = (data, final) => {
+    try { deflate.push(data, final); } catch (error) { entry.ondata(error, null, final); }
+  };
+  return entry;
 }
 
-async function uploadFiles(job) {
-	const { metadata, config, files } = job;
-	const { sha, name, originalSize } = metadata;
-	const record = { name, sha, symmetricKey: job.symmetricKey, total: null, config };
-	active = { name, sent: 0, total: null, bytesSent: 0, totalBytes: originalSize, meter: new TransferMeter(originalSize), cleaning: false };
-	abortController = new AbortController();
-	const startedAt = performance.now();
-	const path = `/channels/${config.channelId}/messages`;
-	// Each chunk is put straight into Discord's storage, and every BATCH_CHUNKS of
-	// them are posted as one message. If that upload API fails, the chunks stored
-	// but not posted yet and all later ones go the old way, one per message. The
-	// next chunk is compressed and encrypted while the current one uploads; at most
-	// one upload runs at a time.
-	let uploading = Promise.resolve(), uploadError = null;
-	let direct = true, batch = []; // chunks stored but not posted; their Blobs can go to disk
-	try {
-		// Stored first, so a browser restart mid-send can still find and remove the chunks.
-		await storage("set", { activeUpload: record });
-		publishActive();
-		const key = await importChunkKey(job.symmetricKey, "encrypt");
-		const prefix = crypto.getRandomValues(new Uint8Array(8));
-		const queue = new ByteQueue();
-		let zipError = null, zipDone = false;
-		const zip = new fflate.Zip((error, data, final) => { if (error) zipError = error; else { queue.push(data); if (final) zipDone = true; } });
-		let inputRead = 0, lastCutInput = 0, index = 0, encryptedSize = 0, firstId = null;
+async function runUpload(job) {
+  const { metadata, config, files } = job;
+  const { sha, name, originalSize } = metadata;
+  const record = { name, sha, symmetricKey: job.symmetricKey, config };
+  activeUpload = { name, sent: 0, bytesSent: 0, totalBytes: originalSize, meter: new TransferMeter(originalSize), cleaning: false };
+  abortController = new AbortController();
+  const startedAt = performance.now();
+  const path = `/channels/${config.channelId}/messages`;
+  // Each chunk is put straight into Discord's storage, and every BATCH_CHUNKS of
+  // them are posted as one message. If that upload API fails, the chunks stored
+  // but not posted yet and all later ones go the old way, one per message. The
+  // next chunk is compressed and encrypted while the current one uploads; at most
+  // one upload runs at a time.
+  let uploading = Promise.resolve(), uploadError = null;
+  let direct = true, batch = []; // chunks stored but not posted; their Blobs can go to disk
+  try {
+    // Stored first, so a browser restart mid-send can still find and remove the chunks.
+    await storage("set", { activeUpload: record });
+    publishActiveUpload();
+    const key = await importChunkKey(job.symmetricKey, "encrypt");
+    const prefix = crypto.getRandomValues(new Uint8Array(8));
+    const queue = new ByteQueue();
+    let zipError = null, zipDone = false;
+    const zip = new fflate.Zip((error, data, final) => { if (error) zipError = error; else { queue.push(data); if (final) zipDone = true; } });
+    let inputRead = 0, lastCutInput = 0, index = 0, encryptedSize = 0, firstId = null;
 
-		async function sendPiece(plain, final) {
-			const number = ++index;
-			const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: chunkIv(prefix, number), additionalData: chunkAad(sha, number, final) }, key, plain);
-			encryptedSize += ciphertext.byteLength;
-			// Progress is counted in original bytes, spread over each chunk as it uploads.
-			const from = lastCutInput, to = final ? originalSize : inputRead;
-			lastCutInput = to;
-			const piece = { number, filename: `${sha}.${number}`, blob: new Blob([ciphertext]), bytes: ciphertext.byteLength, from, to, final };
-			await uploading;
-			if (uploadError) throw uploadError;
-			throwIfCanceled();
-			uploading = uploadPiece(piece).catch((error) => { uploadError = error; });
-		}
-		async function uploadPiece(piece) {
-			active.sending = piece.number;
-			publishActive();
-			if (direct) {
-				try {
-					piece.uploaded = await storePiece(piece);
-					batch.push(piece);
-					active.sent = piece.number;
-					publishActive();
-					if (batch.length === BATCH_CHUNKS || piece.final) await postBatch();
-					return;
-				} catch (error) {
-					if (!error.directFailed) throw error;
-					direct = false;
-					active.fallback = true;
-					const pending = batch.includes(piece) ? batch : [...batch, piece];
-					batch = [];
-					for (const each of pending) await sendSingle(each);
-					return;
-				}
-			}
-			await sendSingle(piece);
-		}
-		const pieceProgress = (piece) => (loaded) => {
-			active.bytesSent = piece.from + (piece.to - piece.from) * Math.min(1, loaded / piece.bytes);
-			if (performance.now() - lastPublish >= PUBLISH_INTERVAL_MS) publishActive();
-		};
-		const onRetry = (piece) => (attempt) => {
-			active.retrying = { chunk: piece.number, attempt, of: SEND_ATTEMPTS };
-			active.bytesSent = piece.from;
-			publishActive();
-		};
-		function posted(message, piece) {
-			active.retrying = null;
-			if (!firstId) firstId = message?.id;
-			if (!firstId) throw new Error("Discord did not return the chunk message");
-			active.sent = piece.number;
-			active.bytesSent = piece.to;
-			publishActive();
-		}
-		// Getting an upload address and putting the file there are safe to repeat, so
-		// they are retried without checking the channel. A failure that outlasts the
-		// retries is the upload API's, and sends the rest one chunk per message.
-		async function storePiece(piece) {
-			const signal = abortController.signal;
-			const retried = async (action) => {
-				for (let attempt = 1; ; attempt++) {
-					try { return await action(); }
-					catch (error) {
-						if (cancelRequested || !isUncertainFailure(error) || attempt >= SEND_ATTEMPTS) throw error;
-						onRetry(piece)(attempt + 1);
-						await sleep(SEND_RECHECK_MS);
-						throwIfCanceled();
-					}
-				}
-			};
-			try {
-				const slot = await retried(() => uploadSlot(config, piece.filename, piece.bytes, { signal }));
-				await retried(() => storageUpload(slot.upload_url, piece.blob, { signal, onProgress: pieceProgress(piece) }));
-				active.retrying = null;
-				active.bytesSent = piece.to;
-				return slot.upload_filename;
-			} catch (error) {
-				throw directFailure(error);
-			}
-		}
-		async function postBatch() {
-			const pieces = batch, last = pieces[pieces.length - 1];
-			const attachments = pieces.map((piece, i) => ({ id: String(i), filename: piece.filename, uploaded_filename: piece.uploaded }));
-			const what = pieces.length > 1 ? `chunks ${pieces[0].number}-${last.number}` : `chunk ${last.number}`;
-			let message;
-			try {
-				message = await sendChecked(config, what,
-					() => discordRequest(config, "POST", path, { json: { attachments }, signal: abortController.signal }),
-					(sent) => pieces.every((piece) => (sent.attachments || []).some((a) => a.filename === piece.filename)),
-					onRetry(last));
-			} catch (error) {
-				// sendChecked waits out a lost connection, so what reaches here is Discord refusing the stored files.
-				throw directFailure(error);
-			}
-			batch = [];
-			posted(message, last);
-		}
-		async function sendSingle(piece) {
-			active.sending = piece.number;
-			publishActive();
-			const form = new FormData();
-			form.append("payload_json", JSON.stringify({}));
-			form.append("files[0]", piece.blob, piece.filename);
-			const message = await sendChecked(config, `chunk ${piece.number}`,
-				() => discordUpload(config, path, form, { signal: abortController.signal, onProgress: pieceProgress(piece) }),
-				(sent) => (sent.attachments || []).some((a) => a.filename === piece.filename && (!a.size || a.size === piece.bytes)),
-				onRetry(piece));
-			posted(message, piece);
-		}
-		// Sends every full piece that can't be the last one; the last is sent after the zip ends.
-		async function drain() {
-			if (zipError) throw zipError;
-			if (uploadError) throw uploadError;
-			while (queue.length > PLAIN_CHUNK_BYTES) {
-				throwIfCanceled();
-				await sendPiece(queue.take(PLAIN_CHUNK_BYTES), false);
-			}
-		}
+    async function sendPiece(plain, final) {
+      const number = ++index;
+      const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: chunkIv(prefix, number), additionalData: chunkAad(sha, number, final) }, key, plain);
+      encryptedSize += ciphertext.byteLength;
+      // Progress is counted in original bytes, spread over each chunk as it uploads.
+      const from = lastCutInput, to = final ? originalSize : inputRead;
+      lastCutInput = to;
+      const piece = { number, filename: `${sha}.${number}`, blob: new Blob([ciphertext]), bytes: ciphertext.byteLength, from, to, final };
+      await uploading;
+      if (uploadError) throw uploadError;
+      throwIfCanceled();
+      uploading = uploadPiece(piece).catch((error) => { uploadError = error; });
+    }
+    async function uploadPiece(piece) {
+      if (direct) {
+        try {
+          piece.uploaded = await storePiece(piece);
+          batch.push(piece);
+          activeUpload.sent = piece.number;
+          publishActiveUpload();
+          if (batch.length === BATCH_CHUNKS || piece.final) await postBatch();
+          return;
+        } catch (error) {
+          if (!error.directFailed) throw error;
+          direct = false;
+          activeUpload.fallback = true;
+          const pending = batch.includes(piece) ? batch : [...batch, piece];
+          batch = [];
+          for (const each of pending) await sendSingle(each);
+          return;
+        }
+      }
+      await sendSingle(piece);
+    }
+    const pieceProgress = (piece) => (loaded) => {
+      activeUpload.bytesSent = piece.from + (piece.to - piece.from) * Math.min(1, loaded / piece.bytes);
+      if (performance.now() - lastUploadPublish >= PUBLISH_INTERVAL_MS) publishActiveUpload();
+    };
+    const onRetry = (piece) => (attempt) => {
+      activeUpload.retrying = { chunk: piece.number, attempt, of: SEND_ATTEMPTS };
+      activeUpload.bytesSent = piece.from;
+      publishActiveUpload();
+    };
+    function posted(message, piece) {
+      activeUpload.retrying = null;
+      if (!firstId) firstId = message?.id;
+      if (!firstId) throw new Error("Discord did not return the chunk message");
+      activeUpload.sent = piece.number;
+      activeUpload.bytesSent = piece.to;
+      publishActiveUpload();
+    }
+    // Getting an upload address and putting the file there are safe to repeat, so
+    // they are retried without checking the channel. A failure that outlasts the
+    // retries is the upload API's, and sends the rest one chunk per message.
+    async function storePiece(piece) {
+      const signal = abortController.signal;
+      const retried = async (action) => {
+        for (let attempt = 1; ; attempt++) {
+          try { return await action(); }
+          catch (error) {
+            if (cancelRequested || !isUncertainFailure(error) || attempt >= SEND_ATTEMPTS) throw error;
+            onRetry(piece)(attempt + 1);
+            await sleep(SEND_RECHECK_MS);
+            throwIfCanceled();
+          }
+        }
+      };
+      try {
+        const slot = await retried(() => uploadSlot(config, piece.filename, piece.bytes, { signal }));
+        await retried(() => storageUpload(slot.upload_url, piece.blob, { signal, onProgress: pieceProgress(piece) }));
+        activeUpload.retrying = null;
+        activeUpload.bytesSent = piece.to;
+        return slot.upload_filename;
+      } catch (error) {
+        throw directFailure(error);
+      }
+    }
+    async function postBatch() {
+      const pieces = batch, last = pieces[pieces.length - 1];
+      const attachments = pieces.map((piece, i) => ({ id: String(i), filename: piece.filename, uploaded_filename: piece.uploaded }));
+      let message;
+      try {
+        message = await sendChecked(config,
+          () => discordRequest(config, "POST", path, { json: { attachments }, signal: abortController.signal }),
+          (sent) => pieces.every((piece) => (sent.attachments || []).some((a) => a.filename === piece.filename)),
+          onRetry(last));
+      } catch (error) {
+        // sendChecked waits out a lost connection, so what reaches here is Discord refusing the stored files.
+        throw directFailure(error);
+      }
+      batch = [];
+      posted(message, last);
+    }
+    async function sendSingle(piece) {
+      const form = new FormData();
+      form.append("payload_json", JSON.stringify({}));
+      form.append("files[0]", piece.blob, piece.filename);
+      const message = await sendChecked(config,
+        () => discordUpload(config, path, form, { signal: abortController.signal, onProgress: pieceProgress(piece) }),
+        (sent) => (sent.attachments || []).some((a) => a.filename === piece.filename && (!a.size || a.size === piece.bytes)),
+        onRetry(piece));
+      posted(message, piece);
+    }
+    // Sends every full piece that can't be the last one; the last is sent after the zip ends.
+    async function drain() {
+      if (zipError) throw zipError;
+      if (uploadError) throw uploadError;
+      while (queue.length > PLAIN_CHUNK_BYTES) {
+        throwIfCanceled();
+        await sendPiece(queue.take(PLAIN_CHUNK_BYTES), false);
+      }
+    }
 
-		for (const { file, path: filePath } of files) {
-			const entry = zipEntry(filePath, file);
-			zip.add(entry);
-			if (!file.size) entry.push(new Uint8Array(0), true);
-			for (let offset = 0; offset < file.size; offset += READ_SLICE_BYTES) {
-				throwIfCanceled();
-				const slice = new Uint8Array(await file.slice(offset, offset + READ_SLICE_BYTES).arrayBuffer());
-				inputRead += slice.length;
-				entry.push(slice, offset + READ_SLICE_BYTES >= file.size);
-				await drain();
-			}
-		}
-		zip.end();
-		await drain();
-		if (!zipDone) throw new Error("the zip stream did not finish");
-		throwIfCanceled();
-		await sendPiece(queue.take(queue.length), true);
-		await uploading;
-		if (uploadError) throw uploadError;
-		throwIfCanceled();
-		const manifest = { v: 4, sha, name, kind: metadata.kind, originalSize, encryptedSize, total: index, iv: base64urlEncode(prefix), firstId };
-		manifest.title = await encryptManifestTitle(manifest, key);
-		manifest.tag = await manifestTag(manifest, key);
-		delete manifest.name;
-		const content = MANIFEST_MARKER + JSON.stringify(manifest);
-		await sendChecked(config, "the file manifest",
-			() => discordRequest(config, "POST", path, { json: { content }, signal: abortController.signal }),
-			(sent) => sent.content === content);
-		// An open channel lists every file without tokens, so only the latest send's token is kept.
-		await storage("set", { ...(config.open ? {} : { [tokenKey(config.id, sha)]: job.symmetricKey }), [lastTokenKey(config.id)]: `${sha}.${job.symmetricKey}` });
-		await storage("remove", ["activeUpload"]);
-		const seconds = (performance.now() - startedAt) / 1000;
-		publish({ active: false, outcome: "ok", name, total: index, size: originalSize, speed: seconds > 0 ? originalSize / seconds : 0, fallback: !direct });
-	} catch (error) {
-		const canceled = cancelRequested || error.name === "AbortError";
-		active.cleaning = true;
-		publishActive();
-		// A chunk still uploading must end before cleanup looks for its message.
-		abortController.abort();
-		await uploading;
-		const cleanupError = await cleanUpUpload(record);
-		await storage("remove", ["activeUpload"]).catch(() => {});
-		const lead = canceled ? "Upload canceled" : `Send failed: ${error.message}`;
-		publish({
-			active: false, outcome: canceled ? "canceled" : "error", failed: !canceled || !!cleanupError,
-			text: cleanupError ? `${lead}, but ${cleanupFailureText(cleanupError)}` : `${lead}. Sent chunks were removed from Discord.`,
-		});
-	} finally {
-		active = null;
-		abortController = null;
-	}
+    for (const { file, path: filePath } of files) {
+      const entry = zipEntry(filePath, file);
+      zip.add(entry);
+      if (!file.size) entry.push(new Uint8Array(0), true);
+      for (let offset = 0; offset < file.size; offset += READ_SLICE_BYTES) {
+        throwIfCanceled();
+        const slice = new Uint8Array(await file.slice(offset, offset + READ_SLICE_BYTES).arrayBuffer());
+        inputRead += slice.length;
+        entry.push(slice, offset + READ_SLICE_BYTES >= file.size);
+        await drain();
+      }
+    }
+    zip.end();
+    await drain();
+    if (!zipDone) throw new Error("the zip stream did not finish");
+    throwIfCanceled();
+    await sendPiece(queue.take(queue.length), true);
+    await uploading;
+    if (uploadError) throw uploadError;
+    throwIfCanceled();
+    const manifest = { v: 4, sha, name, kind: metadata.kind, originalSize, encryptedSize, total: index, iv: base64urlEncode(prefix), firstId };
+    manifest.title = await encryptManifestTitle(manifest, key);
+    manifest.tag = await manifestTag(manifest, key);
+    delete manifest.name;
+    const content = MANIFEST_MARKER + JSON.stringify(manifest);
+    await sendChecked(config,
+      () => discordRequest(config, "POST", path, { json: { content }, signal: abortController.signal }),
+      (sent) => sent.content === content);
+    // An open channel lists every file without tokens, so only the latest send's token is kept.
+    await storage("set", { ...(config.open ? {} : { [tokenKey(config.id, sha)]: job.symmetricKey }), [lastTokenKey(config.id)]: `${sha}.${job.symmetricKey}` });
+    await storage("remove", ["activeUpload"]);
+    const seconds = (performance.now() - startedAt) / 1000;
+    publishUpload({ active: false, outcome: "ok", name, size: originalSize, speed: seconds > 0 ? originalSize / seconds : 0, fallback: !direct });
+  } catch (error) {
+    const canceled = cancelRequested || error.name === "AbortError";
+    activeUpload.cleaning = true;
+    publishActiveUpload();
+    // A chunk still uploading must end before cleanup looks for its message.
+    abortController.abort();
+    await uploading;
+    const cleanupError = await cleanUpUpload(record);
+    await storage("remove", ["activeUpload"]).catch(() => {});
+    const lead = canceled ? "Upload canceled" : `Send failed: ${error.message}`;
+    publishUpload({
+      active: false, outcome: canceled ? "canceled" : "error", failed: !canceled || !!cleanupError,
+      text: cleanupError ? `${lead}, but ${cleanupFailureText(cleanupError)}` : `${lead}. Sent chunks were removed from Discord.`,
+    });
+  } finally {
+    activeUpload = null;
+    abortController = null;
+  }
 }
 
 async function cleanUpInterruptedUpload(record) {
-	const cleanupError = await cleanUpUpload(record);
-	await storage("remove", ["activeUpload"]).catch(() => {});
-	active = null;
-	publish({
-		active: false, outcome: "interrupted", failed: !!cleanupError,
-		text: cleanupError ? `Upload of ${record.name} was interrupted, and ${cleanupFailureText(cleanupError)}` : `Upload of ${record.name} was interrupted; its sent chunks were removed. Send it again.`,
-	});
+  const cleanupError = await cleanUpUpload(record);
+  await storage("remove", ["activeUpload"]).catch(() => {});
+  activeUpload = null;
+  publishUpload({
+    active: false, outcome: "interrupted", failed: !!cleanupError,
+    text: cleanupError ? `Upload of ${record.name} was interrupted, and ${cleanupFailureText(cleanupError)}` : `Upload of ${record.name} was interrupted; its sent chunks were removed. Send it again.`,
+  });
 }
 
 // On startup, a stored activeUpload means the browser closed mid-send.
 const ready = (async () => {
-	const { activeUpload: record } = await storage("get", ["activeUpload"]);
-	if (!record?.sha) return;
-	if (!record.config?.id) {
-		const { configs, activeConfigId } = await storage("get", ["configs", "activeConfigId"]);
-		record.config = configs?.find((config) => config.id === activeConfigId) || { id: activeConfigId, ...record.config };
-	}
-	active = { name: record.name, sent: 0, total: record.total, bytesSent: 0, totalBytes: 0, meter: new TransferMeter(0), cleaning: true };
-	cleanUpInterruptedUpload(record);
+  const { activeUpload: record } = await storage("get", ["activeUpload"]);
+  if (!record?.sha) return;
+  if (!record.config?.id) {
+    const { configs, activeConfigId } = await storage("get", ["configs", "activeConfigId"]);
+    record.config = configs?.find((config) => config.id === activeConfigId) || { id: activeConfigId, ...record.config };
+  }
+  activeUpload = { name: record.name, sent: 0, bytesSent: 0, totalBytes: 0, meter: new TransferMeter(0), cleaning: true };
+  cleanUpInterruptedUpload(record);
 })().catch(() => {});
 
 // ---- Downloads ----
 
-function publishDownload(state) { channel.postMessage({ type: "downloadState", state }); }
+function publishDownload(state) { engineChannel.postMessage({ type: "downloadState", state }); }
 function publishActiveDownload() {
-	lastDownloadPublish = performance.now();
-	const { speed, eta } = activeDownload.meter ? activeDownload.meter.update(activeDownload.done) : { speed: 0, eta: null };
-	publishDownload({ active: true, sha: activeDownload.sha, name: activeDownload.name, phase: activeDownload.phase, done: activeDownload.done, totalBytes: activeDownload.totalBytes, speed, eta });
+  lastDownloadPublish = performance.now();
+  const { speed, eta } = activeDownload.meter ? activeDownload.meter.update(activeDownload.done) : { speed: 0, eta: null };
+  publishDownload({ active: true, sha: activeDownload.sha, name: activeDownload.name, phase: activeDownload.phase, done: activeDownload.done, totalBytes: activeDownload.totalBytes, speed, eta });
 }
 async function saveBlob(blob, filename) {
-	const url = URL.createObjectURL(blob);
-	try { await background({ type: "download", url, filename, saveAs: true }); }
-	finally { setTimeout(() => URL.revokeObjectURL(url), 10 * 60 * 1000); }
+  const url = URL.createObjectURL(blob);
+  try { await background({ type: "download", url, filename, saveAs: true }); }
+  finally { setTimeout(() => URL.revokeObjectURL(url), 10 * 60 * 1000); }
 }
 // Blob parts are kept by the browser outside this page's memory, and can go to disk.
 function blobWriter(onClose) {
-	const parts = [];
-	return { write: async (data) => { parts.push(new Blob([data])); }, close: async () => onClose(new Blob(parts, { type: "application/octet-stream" })) };
+  const parts = [];
+  return { write: async (data) => { parts.push(new Blob([data])); }, close: async () => onClose(new Blob(parts, { type: "application/octet-stream" })) };
 }
 async function folderWriter(dirHandle, path) {
-	const segments = path.split("/").filter((segment) => segment && segment !== ".");
-	const filename = segments.pop();
-	let current = dirHandle;
-	for (const segment of segments) current = await current.getDirectoryHandle(segment, { create: true });
-	const writable = await (await current.getFileHandle(filename, { create: true })).createWritable();
-	return { write: (data) => writable.write(data), close: () => writable.close() };
+  const segments = path.split("/").filter((segment) => segment && segment !== ".");
+  const filename = segments.pop();
+  let current = dirHandle;
+  for (const segment of segments) current = await current.getDirectoryHandle(segment, { create: true });
+  const writable = await (await current.getFileHandle(filename, { create: true })).createWritable();
+  return { write: (data) => writable.write(data), close: () => writable.close() };
 }
 // Streaming unzip whose file writes are async: push() waits until everything it
 // produced has been written, so output never piles up in memory.
 function unzipSink(openFile) {
-	let chain = Promise.resolve(), failure = null;
-	const unzip = new fflate.Unzip((file) => {
-		if (file.name.endsWith("/")) { file.start(); return; }
-		let target = null;
-		chain = chain.then(async () => { target = await openFile(file.name); });
-		file.ondata = (error, data, final) => {
-			if (error) { failure = error; return; }
-			chain = chain.then(() => target.write(data));
-			if (final) chain = chain.then(() => target.close());
-		};
-		file.start();
-	});
-	unzip.register(fflate.UnzipInflate);
-	return {
-		async push(data, final) {
-			for (let offset = 0; offset < data.length || (final && offset === 0); offset += UNZIP_SLICE_BYTES) {
-				const last = final && offset + UNZIP_SLICE_BYTES >= data.length;
-				unzip.push(data.subarray(offset, offset + UNZIP_SLICE_BYTES), last);
-				if (failure) throw failure;
-				await chain;
-				if (last) break;
-			}
-		},
-		done: () => chain,
-	};
+  let chain = Promise.resolve(), failure = null;
+  const unzip = new fflate.Unzip((file) => {
+    if (file.name.endsWith("/")) { file.start(); return; }
+    let target = null;
+    chain = chain.then(async () => { target = await openFile(file.name); });
+    file.ondata = (error, data, final) => {
+      if (error) { failure = error; return; }
+      chain = chain.then(() => target.write(data));
+      if (final) chain = chain.then(() => target.close());
+    };
+    file.start();
+  });
+  unzip.register(fflate.UnzipInflate);
+  return {
+    async push(data, final) {
+      for (let offset = 0; offset < data.length || (final && offset === 0); offset += UNZIP_SLICE_BYTES) {
+        const last = final && offset + UNZIP_SLICE_BYTES >= data.length;
+        unzip.push(data.subarray(offset, offset + UNZIP_SLICE_BYTES), last);
+        if (failure) throw failure;
+        await chain;
+        if (last) break;
+      }
+    },
+    done: () => chain,
+  };
 }
 
 async function runDownload(job) {
-	activeDownload = { sha: job.sha, name: job.name, phase: "downloading", done: 0, totalBytes: 0, meter: null };
-	publishActiveDownload();
-	try {
-		const encodedKey = job.key.split(".", 2)[1];
-		const item = await findTransfer(job.config, job.key);
-		if (!item) throw new Error("file manifest not found");
-		const onProgress = (done, totalBytes) => {
-			activeDownload.meter ??= new TransferMeter(totalBytes);
-			activeDownload.done = done; activeDownload.totalBytes = totalBytes;
-			if (performance.now() - lastDownloadPublish >= PUBLISH_INTERVAL_MS) publishActiveDownload();
-		};
-		// The folder was picked in the popup; if its write access didn't carry over, save the zip instead.
-		const canWriteFolder = job.dirHandle && await job.dirHandle.queryPermission({ mode: "readwrite" }).catch(() => "denied") === "granted";
-		const zipName = job.name.replace(/\/$/, "") + ".zip";
-		const note = job.dirHandle && !canWriteFolder ? " (saved as a zip: no write access to the chosen folder)" : "";
-		const saves = [];
+  activeDownload = { sha: job.sha, name: job.name, phase: "downloading", done: 0, totalBytes: 0, meter: null };
+  publishActiveDownload();
+  try {
+    const encodedKey = job.token.split(".", 2)[1];
+    const item = await findTransfer(job.config, job.token);
+    if (!item) throw new Error("file manifest not found");
+    const onProgress = (done, totalBytes) => {
+      activeDownload.meter ??= new TransferMeter(totalBytes);
+      activeDownload.done = done; activeDownload.totalBytes = totalBytes;
+      if (performance.now() - lastDownloadPublish >= PUBLISH_INTERVAL_MS) publishActiveDownload();
+    };
+    // The folder was picked in the popup; if its write access didn't carry over, save the zip instead.
+    const canWriteFolder = job.dirHandle && await job.dirHandle.queryPermission({ mode: "readwrite" }).catch(() => "denied") === "granted";
+    const zipName = job.name.replace(/\/$/, "") + ".zip";
+    const note = job.dirHandle && !canWriteFolder ? " (saved as a zip: no write access to the chosen folder)" : "";
+    const saves = [];
 
-		// A folder is unzipped straight into place and a single file is unzipped
-		// into a Blob; anything else is saved as the zip itself.
-		let sink;
-		if (canWriteFolder) sink = unzipSink((entryName) => folderWriter(job.dirHandle, entryName));
-		else if (job.kind === "file") sink = unzipSink(async (entryName) => blobWriter((blob) => { saves.push(saveBlob(blob, entryName.split("/").pop())); }));
-		else {
-			const zipWriter = blobWriter((blob) => { saves.push(saveBlob(blob, zipName)); });
-			sink = { push: async (data, final) => { await zipWriter.write(data); if (final) await zipWriter.close(); }, done: async () => {} };
-		}
-		const total = Number(item.manifest.total);
-		let index = 0;
-		for await (const plain of decryptChunks(item, encodedKey, onProgress)) {
-			index++;
-			await sink.push(plain, index === total);
-		}
-		activeDownload.phase = "saving"; publishActiveDownload();
-		await sink.done();
-		await Promise.all(saves);
-		publishDownload({ active: false, outcome: "ok", sha: job.sha, text: `Downloaded ${job.name} ✓${note}` });
-	} catch (error) {
-		publishDownload({ active: false, outcome: "error", sha: job.sha, text: `Download failed: ${error.message}` });
-	} finally {
-		activeDownload = null;
-	}
+    // A folder is unzipped straight into place and a single file is unzipped
+    // into a Blob; anything else is saved as the zip itself.
+    let sink;
+    if (canWriteFolder) sink = unzipSink((entryName) => folderWriter(job.dirHandle, entryName));
+    else if (job.kind === "file") sink = unzipSink(async (entryName) => blobWriter((blob) => { saves.push(saveBlob(blob, entryName.split("/").pop())); }));
+    else {
+      const zipWriter = blobWriter((blob) => { saves.push(saveBlob(blob, zipName)); });
+      sink = { push: async (data, final) => { await zipWriter.write(data); if (final) await zipWriter.close(); }, done: async () => {} };
+    }
+    const total = Number(item.manifest.total);
+    let index = 0;
+    for await (const plain of decryptChunks(item, encodedKey, onProgress)) {
+      index++;
+      await sink.push(plain, index === total);
+    }
+    activeDownload.phase = "saving"; publishActiveDownload();
+    await sink.done();
+    await Promise.all(saves);
+    publishDownload({ active: false, outcome: "ok", sha: job.sha, text: `Downloaded ${job.name} ✓${note}` });
+  } catch (error) {
+    publishDownload({ active: false, outcome: "error", sha: job.sha, text: `Download failed: ${error.message}` });
+  } finally {
+    activeDownload = null;
+  }
 }
 
 // ---- Deletes ----
 
 function pendingDeleteShas() { return deleteJobs.flatMap((job) => job.shas); }
 function publishDeletes(finished = null) {
-	const current = deleteJobs[0];
-	channel.postMessage({ type: "deleteState", state: { pendingShas: pendingDeleteShas(), current: current ? { label: current.label, deleted: current.deleted } : null, finished } });
+  const current = deleteJobs[0];
+  engineChannel.postMessage({ type: "deleteState", state: { pendingShas: pendingDeleteShas(), current: current ? { label: current.label, deleted: current.deleted } : null, finished } });
 }
 async function removeTokens(configId, shas) {
-	const data = await storage("get", null);
-	const removals = shas.map((sha) => tokenKey(configId, sha)).filter((name) => name in data);
-	const last = data[lastTokenKey(configId)];
-	if (typeof last === "string" && shas.includes(last.split(".", 1)[0])) removals.push(lastTokenKey(configId));
-	if (removals.length) await storage("remove", removals);
+  const data = await storage("get", null);
+  const removals = shas.map((sha) => tokenKey(configId, sha)).filter((name) => name in data);
+  const last = data[lastTokenKey(configId)];
+  if (typeof last === "string" && shas.includes(last.split(".", 1)[0])) removals.push(lastTokenKey(configId));
+  if (removals.length) await storage("remove", removals);
 }
 async function runDelete(job) {
-	publishDeletes();
-	let finished;
-	try {
-		const deleted = await deleteTransfers(job.config, job.shas, (count) => { job.deleted = count; publishDeletes(); });
-		// Tokens go only after Discord is clean, so an interrupted delete can be retried.
-		await removeTokens(job.config.id, job.shas);
-		finished = { outcome: "ok", shas: job.shas, text: `Deleted ${job.label}: ${deleted} Discord message(s) removed.` };
-	} catch (error) {
-		finished = { outcome: "error", shas: job.shas, text: `Delete failed: ${error.message}` };
-	}
-	deleteJobs.shift();
-	publishDeletes(finished);
+  publishDeletes();
+  let finished;
+  try {
+    const deleted = await deleteTransfers(job.config, job.shas, (count) => { job.deleted = count; publishDeletes(); });
+    // Tokens go only after Discord is clean, so an interrupted delete can be retried.
+    await removeTokens(job.config.id, job.shas);
+    finished = { outcome: "ok", shas: job.shas, text: `Deleted ${job.label}: ${deleted} Discord message(s) removed.` };
+  } catch (error) {
+    finished = { outcome: "error", shas: job.shas, text: `Delete failed: ${error.message}` };
+  }
+  deleteJobs.shift();
+  publishDeletes(finished);
 }
 function enqueueDelete(job) {
-	deleteJobs.push({ ...job, deleted: 0 });
-	const queued = deleteJobs[deleteJobs.length - 1];
-	deleteQueue = deleteQueue.then(() => runDelete(queued));
-	publishDeletes();
+  deleteJobs.push({ ...job, deleted: 0 });
+  const queued = deleteJobs[deleteJobs.length - 1];
+  deleteQueue = deleteQueue.then(() => runDelete(queued));
+  publishDeletes();
 }
 
 // ---- Messages from the popup ----
 
-channel.onmessage = async (event) => {
-	const message = event.data || {};
-	// Answer only once any interrupted upload has been picked up, so the popup never sees a stale idle.
-	await ready;
-	if (message.type === "startUpload") {
-		if (active) {
-			publish({ active: false, outcome: "error", failed: true, text: "Another upload is still running." });
-			publishActive();
-			return;
-		}
-		cancelRequested = false;
-		await uploadFiles(message.job);
-	} else if (message.type === "cancelUpload") {
-		if (!active || active.cleaning) return;
-		cancelRequested = true;
-		abortController?.abort();
-		publishActive();
-	} else if (message.type === "resumeUpload") {
-		resumeUpload?.();
-	} else if (message.type === "startDownload") {
-		if (activeDownload) { publishDownload({ active: false, outcome: "error", sha: message.job.sha, text: "Another download is still running." }); publishActiveDownload(); return; }
-		await runDownload(message.job);
-	} else if (message.type === "startDelete") {
-		enqueueDelete(message.job);
-	} else if (message.type === "hello") {
-		if (active) publishActive();
-		else publish({ active: false, idle: true });
-		if (activeDownload) publishActiveDownload();
-		if (deleteJobs.length) publishDeletes();
-	}
+engineChannel.onmessage = async (event) => {
+  const message = event.data || {};
+  // Answer only once any interrupted upload has been picked up, so the popup never sees a stale idle.
+  await ready;
+  if (message.type === "startUpload") {
+    if (activeUpload) {
+      publishUpload({ active: false, outcome: "error", failed: true, text: "Another upload is still running." });
+      publishActiveUpload();
+      return;
+    }
+    cancelRequested = false;
+    await runUpload(message.job);
+  } else if (message.type === "cancelUpload") {
+    if (!activeUpload || activeUpload.cleaning) return;
+    cancelRequested = true;
+    abortController?.abort();
+    publishActiveUpload();
+  } else if (message.type === "resumeUpload") {
+    resumeUpload?.();
+  } else if (message.type === "startDownload") {
+    if (activeDownload) { publishDownload({ active: false, outcome: "error", sha: message.job.sha, text: "Another download is still running." }); publishActiveDownload(); return; }
+    await runDownload(message.job);
+  } else if (message.type === "startDelete") {
+    enqueueDelete(message.job);
+  } else if (message.type === "hello") {
+    if (activeUpload) publishActiveUpload();
+    else publishUpload({ active: false, idle: true });
+    if (activeDownload) publishActiveDownload();
+    if (deleteJobs.length) publishDeletes();
+  }
 };

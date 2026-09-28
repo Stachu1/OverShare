@@ -26,26 +26,26 @@ chrome.runtime.onStartup.addListener(async () => {
   if (activeUpload) ensureEngine().catch(() => {});
 });
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (!msg || msg.target !== "background") return;
-  if (msg.type === "ensureEngine") {
-    ensureEngine().then(() => sendResponse({ ok: true }), (e) => sendResponse({ error: e.message }));
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (!message || message.target !== "background") return;
+  if (message.type === "ensureEngine") {
+    ensureEngine().then(() => sendResponse({ ok: true }), (error) => sendResponse({ error: error.message }));
     return true;
   }
-  if (msg.type === "download") {
-    chrome.downloads.download({ url: msg.url, filename: msg.filename, saveAs: msg.saveAs })
-      .then((id) => sendResponse({ id }), (e) => sendResponse({ error: e.message }));
+  if (message.type === "download") {
+    chrome.downloads.download({ url: message.url, filename: message.filename, saveAs: message.saveAs })
+      .then((id) => sendResponse({ id }), (error) => sendResponse({ error: error.message }));
     return true;
   }
-  if (msg.type === "storage") {
-    const operation = msg.operation === "get"
-      ? chrome.storage.local.get(msg.keys)
-      : msg.operation === "set"
-        ? chrome.storage.local.set(msg.items)
-        : msg.operation === "remove"
-          ? chrome.storage.local.remove(msg.keys)
+  if (message.type === "storage") {
+    const operation = message.operation === "get"
+      ? chrome.storage.local.get(message.keys)
+      : message.operation === "set"
+        ? chrome.storage.local.set(message.items)
+        : message.operation === "remove"
+          ? chrome.storage.local.remove(message.keys)
           : Promise.reject(new Error("Unknown storage operation"));
-    operation.then((result) => sendResponse({ ok: true, result }), (e) => sendResponse({ error: e.message }));
+    operation.then((result) => sendResponse({ ok: true, result }), (error) => sendResponse({ error: error.message }));
     return true;
   }
 });

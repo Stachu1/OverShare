@@ -47,17 +47,19 @@ async function decryptManifestTitle(manifest, key) {
   const title = await crypto.subtle.decrypt({ name: "AES-GCM", iv: chunkIv(base64urlDecode(manifest.iv), 0) }, key, base64urlDecode(manifest.title));
   return new TextDecoder().decode(title);
 }
-async function manifestTag(manifest, key) {
+function manifestTagParams(manifest) {
   const index = manifest.v >= 4 ? 0xffffffff : 0;
-  const tag = await crypto.subtle.encrypt({ name: "AES-GCM", iv: chunkIv(base64urlDecode(manifest.iv), index), additionalData: manifestAad(manifest) }, key, new Uint8Array(0));
+  return { name: "AES-GCM", iv: chunkIv(base64urlDecode(manifest.iv), index), additionalData: manifestAad(manifest) };
+}
+async function manifestTag(manifest, key) {
+  const tag = await crypto.subtle.encrypt(manifestTagParams(manifest), key, new Uint8Array(0));
   return base64urlEncode(new Uint8Array(tag));
 }
 async function verifyManifest(manifest, key) {
   const failed = new Error("the file's details failed their integrity check (wrong file token, or the manifest was changed)");
   if (!manifest.tag) { if (manifest.sha.length === LEGACY_ID_LENGTH) return; throw failed; }
   try {
-    const index = manifest.v >= 4 ? 0xffffffff : 0;
-    await crypto.subtle.decrypt({ name: "AES-GCM", iv: chunkIv(base64urlDecode(manifest.iv), index), additionalData: manifestAad(manifest) }, key, base64urlDecode(manifest.tag));
+    await crypto.subtle.decrypt(manifestTagParams(manifest), key, base64urlDecode(manifest.tag));
   } catch (error) {
     if (error.name === "OperationError") throw failed;
     throw error;
@@ -239,22 +241,22 @@ async function channelMessages(config) {
   return messages;
 }
 
-function shasFromKeys(keys) {
-  return new Set(keys.filter((key) => key.includes(".")).map((key) => key.split(".", 1)[0]));
+function shasFromTokens(tokens) {
+  return new Set(tokens.filter((token) => token.includes(".")).map((token) => token.split(".", 1)[0]));
 }
 
 // Walks the channel newest-first, a page of messages at a time, and hands out the
-// transfers whose file tokens are stored (with keys null, every transfer the open
+// transfers whose file tokens are given (with tokens null, every transfer the open
 // key opens), newest first. Chunks are always older than their manifest, and the
 // manifest names the message of chunk 1, so a transfer is handed out as soon as
 // all its chunks are found or the walk has gone past chunk 1. Only as much history
 // is read as the files asked for need. Transfers without a manifest (unfinished or
 // deleted) can only be known once the whole history is read, so they come last.
 class TransferScanner {
-  constructor(config, keys) {
+  constructor(config, tokens) {
     this.config = config;
-    this.wanted = keys ? shasFromKeys(keys) : null; // null takes every transfer
-    this.keys = new Map((keys || []).map((key) => [key.split(".", 1)[0], key.split(".", 2)[1]]));
+    this.wanted = tokens ? shasFromTokens(tokens) : null; // null takes every transfer
+    this.keys = new Map((tokens || []).map((token) => [token.split(".", 1)[0], token.split(".", 2)[1]])); // sha -> key
     this.queue = []; // { manifest, sentAt } with a manifest found, newest first, not handed out yet
     this.parts = {}; // sha -> { chunk number: { url, size } }
     this.seen = new Set(); // shas whose manifest was found
@@ -331,8 +333,8 @@ class TransferScanner {
 }
 
 // Finds one transfer's manifest and chunks, reading no further back than it needs.
-async function findTransfer(config, key) {
-  const scanner = new TransferScanner(config, [key]);
+async function findTransfer(config, token) {
+  const scanner = new TransferScanner(config, [token]);
   const [file] = await scanner.next(1);
   return file?.manifestFound ? { manifest: file, parts: file.parts } : null;
 }

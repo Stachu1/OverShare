@@ -33,9 +33,8 @@
       scrollbar-width: thin;                     /* Firefox */
       scrollbar-color: var(--border) transparent;
     }
-    body { display: flex; flex-direction: column; }
     /* Pin the popup just under Chrome's 600px cap so it never resizes */
-    body { min-height: 596px; }
+    body { display: flex; flex-direction: column; min-height: 596px; }
     /* Thin, subtle scrollbars (Chromium) — no chunky default gutter */
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
@@ -65,12 +64,11 @@
     .update:hover { background: #c93b3e; }
     .update[hidden] { display: none; }
     @keyframes update-pulse { 50% { box-shadow: 0 0 2px rgba(237, 66, 69, 0.3); } }
-    .iconbtn {
+    .icon-button {
       background: none; border: none; cursor: pointer; padding: 0 2px;
       font-size: 15px; line-height: 1; opacity: 0.85;
     }
-    .iconbtn:hover { opacity: 1; }
-    .iconbtn.active { opacity: 1; filter: drop-shadow(0 0 4px var(--accent)); }
+    .icon-button:hover { opacity: 1; }
     main { flex: 1; min-height: 0; overflow: hidden; padding: 14px; display: flex; flex-direction: column; gap: 9px; }
 
     label {
@@ -80,15 +78,13 @@
     .row { display: flex; gap: 8px; align-items: flex-end; }
     .row > div { flex: 1; min-width: 0; }
 
-    input[type="text"], input[type="password"], input[type="number"], textarea {
+    input[type="text"], input[type="password"] {
       width: 100%; padding: 9px 12px;
       background: var(--panel-2); border: 1px solid var(--border);
       border-radius: 8px; color: var(--text); font-size: 13px;
       outline: none; transition: border-color 0.15s;
     }
-    input:focus, textarea:focus { border-color: var(--accent); }
-    input[type="number"]::-webkit-inner-spin-button { opacity: 0.6; }
-    textarea { resize: none; overflow-y: hidden; max-height: 120px; line-height: 1.4; }
+    input:focus { border-color: var(--accent); }
 
     button.mini {
       padding: 10px 12px; white-space: nowrap;
@@ -99,18 +95,11 @@
     }
     button.mini:hover { border-color: var(--accent); }
 
-    .tokenstatus { font-size: 11px; font-weight: 600; margin-top: 5px; }
-    .tokenstatus::before { content: "● "; }
-    .tokenstatus.ok { color: var(--ok); }
-    .tokenstatus.bad { color: var(--err); }
-    .tokenstatus.checking { color: var(--muted); }
-
-    select.mini-select {
-      padding: 9px 8px; background: var(--panel-2); border: 1px solid var(--border);
-      border-radius: 8px; color: var(--text); font-size: 12px; font-weight: 600;
-      cursor: pointer; max-width: 120px;
-    }
-    select.mini-select:hover { border-color: var(--accent); }
+    .bot-status { font-size: 11px; font-weight: 600; margin-top: 5px; }
+    .bot-status::before { content: "● "; }
+    .bot-status.ok { color: var(--ok); }
+    .bot-status.bad { color: var(--err); }
+    .bot-status.checking { color: var(--muted); }
 
     /* Tabs */
     .tabs { flex: 0 0 auto; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; background: var(--panel-2); padding: 4px; border-radius: 10px; position: relative; }
@@ -127,11 +116,10 @@
     }
     .tabs.download .indicator { transform: translateX(calc(100% + 6px)); }
     .tabs.config .indicator { transform: translateX(calc((100% + 6px) * 2)); }
-    .tabs[hidden] { display: none; }
 
     /* Configuration */
-    .configPanel { flex: 1; overflow-y: auto; scrollbar-width: none; }
-    .configPanel::-webkit-scrollbar { display: none; }
+    .config-panel { flex: 1; overflow-y: auto; scrollbar-width: none; }
+    .config-panel::-webkit-scrollbar { display: none; }
     .config-head { align-items: center; justify-content: space-between; }
     .config-head > .row { justify-content: flex-end; }
     .config-head label { margin: 0; }
@@ -164,6 +152,7 @@
       border: 1.5px dashed var(--border); border-radius: 10px;
       padding: 13px; text-align: center; color: var(--muted);
       cursor: pointer; transition: border-color 0.15s, background 0.15s, transform 0.15s;
+      position: relative;
     }
     .drop:hover, .drop.drag { border-color: var(--accent); background: var(--panel-2); }
     .drop.drag { transform: scale(1.02); }
@@ -171,7 +160,6 @@
     .drop.pop { animation: pop 0.32s ease-out; }
     @keyframes pop { 40% { transform: scale(1.03); } }
     .drop .name { font-weight: 600; word-break: break-all; }
-    .drop { position: relative; }
     .drop .clear {
       position: absolute; top: 4px; right: 4px; display: none;
       width: 20px; height: 20px; padding: 0; border: none; border-radius: 50%;
@@ -180,14 +168,13 @@
     }
     .drop.has-file .clear { display: block; }
     .drop.has-file { padding: 13px 24px; }
-    .item button { font-variant-numeric: tabular-nums; }
     .drop .clear:hover { background: var(--border); color: var(--text); }
     .drop .size { font-size: 12px; color: var(--muted); margin-top: 4px; }
     input[type="file"] { display: none; }
     /* Drop zone and folder button side by side, same height */
     .pick { display: flex; gap: 8px; align-items: stretch; }
     .pick .drop { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; }
-    .pick #folderBtn { width: 96px; flex-shrink: 0; white-space: normal; line-height: 1.3; }
+    .pick #pickFolder { width: 96px; flex-shrink: 0; white-space: normal; line-height: 1.3; }
 
     /* The send button's colour and glow follow its state: gray (nothing picked),
        green (ready), red (cancel). --glow is the state's colour as RGB. */
@@ -242,9 +229,7 @@
     .dialog .cancel:hover { background: #5d6070; box-shadow: 0 0 14px rgba(154, 156, 166, 0.45); }
     @keyframes dialog-in { from { opacity: 0; } }
 
-    /* Controls locked during a send */
-    input:disabled, textarea:disabled, select:disabled, button.mini:disabled { opacity: 0.5; cursor: not-allowed; }
-    .drop.locked { opacity: 0.5; pointer-events: none; }
+    input:disabled, button.mini:disabled { opacity: 0.5; cursor: not-allowed; }
 
     .progress { height: 6px; background: var(--panel-2); border-radius: 4px; overflow: hidden; display: none; }
     .progress.show { display: block; animation: panel-in 0.2s ease-out; }
@@ -288,36 +273,30 @@
       *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; animation-delay: 0s !important; transition-duration: 0.01ms !important; }
     }
 
-    #chunkInfo { display: block; margin-top: 2px; }
     .hint { font-size: 11px; color: var(--muted); line-height: 1.5; }
-    #chunkInfo { color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
 
-    /* Download list */
-    .downloadPanel { flex: 1; min-height: 0; overflow: hidden; }
-    .downloadPanel .list { flex: 1; min-height: 0; max-height: none; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+    /* Download and configuration lists */
     .list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
-    /* The file list still scrolls (wheel, touchpad, keyboard), just without a visible bar */
-    #fileList { scrollbar-width: none; }
-    #fileList::-webkit-scrollbar { display: none; }
-    #configList { scrollbar-width: none; }
-    #configList::-webkit-scrollbar { display: none; }
+    /* The lists still scroll (wheel, touchpad, keyboard), just without a visible bar */
+    #fileList, #configList { scrollbar-width: none; }
+    #fileList::-webkit-scrollbar, #configList::-webkit-scrollbar { display: none; }
     .item {
       display: flex; align-items: center; gap: 10px;
       padding: 7px 12px; background: var(--panel-2);
       border: 1px solid var(--border); border-radius: 8px;
+      animation: item-in 0.3s ease-out both; animation-delay: calc(var(--i, 0) * 45ms);
     }
-    .item { animation: item-in 0.3s ease-out both; animation-delay: calc(var(--i, 0) * 45ms); }
     @keyframes item-in { from { opacity: 0; transform: translateY(8px); } }
     .item.removing { animation: item-out 0.28s ease-in forwards; animation-delay: 0s; }
     @keyframes item-out { to { opacity: 0; transform: translateX(40px); } }
     .item .meta { flex: 1; min-width: 0; }
     .item .fname { font-size: 13px; font-weight: 600; word-break: break-all; }
     .item .sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
-    .item .sub.incomplete { color: #f0a04b; }
+    .item .sub.incomplete { color: var(--warn); }
     .item button {
       padding: 6px 12px; border: none; border-radius: 7px;
       background: var(--accent); color: #fff; font-size: 12px; font-weight: 600; cursor: pointer;
-      transition: background 0.15s, transform 0.08s;
+      transition: background 0.15s, transform 0.08s; font-variant-numeric: tabular-nums;
     }
     .item button:hover:not(:disabled) { background: var(--accent-hover); }
     .item button:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -359,13 +338,13 @@
     <h1>OverShare</h1>
     <span class="version" id="version"></span>
     <a class="update" id="update" hidden href="https://github.com/Stachu1/OverShare/archive/refs/heads/main.zip" data-tip="A newer version is on GitHub. Download the zip and load it in place of this one">Update Available</a>
-    <button class="iconbtn" id="mute" data-tip="Mute or unmute interface sounds">🔊</button>
+    <button class="icon-button" id="mute" data-tip="Mute or unmute interface sounds">🔊</button>
   </header>
 
   <main>
     <div>
       <label id="configLabel">Discord bot</label>
-      <div id="botStatus" class="tokenstatus checking">Checking bot…</div>
+      <div id="botStatus" class="bot-status checking">Checking bot…</div>
     </div>
     <div class="tabs" id="tabs">
       <span class="indicator"></span>
@@ -379,7 +358,7 @@
         <label>File or folder</label>
         <div class="pick">
           <div class="drop" id="drop"><div id="dropLabel">Click for a file, or drop a file / folder</div><button class="clear" id="clearPick" aria-label="Clear selection" data-tip="Clear the selection">✕</button></div>
-          <button class="mini" id="folderBtn" data-tip="Choose a whole folder to send, keeping its structure">Or pick a folder…</button>
+          <button class="mini" id="pickFolder" data-tip="Choose a whole folder to send, keeping its structure">Or pick a folder…</button>
         </div>
         <input type="file" id="file" multiple />
         <input type="file" id="folder" webkitdirectory />
@@ -387,7 +366,7 @@
       <div class="open-warning open-only"><b>Open channel.</b> Files sent here are encrypted with OverShare's shared key, not a key of their own: anyone who has this bot and OverShare can list and download them.</div>
       <div class="token-only">
         <label>File token</label>
-        <div class="row"><button class="mini copy-send-token" id="keyCopy" data-tip="Copy the token of the latest sent file, so someone else can download it">Copy Token</button></div>
+        <div class="row"><button class="mini copy-send-token" id="copyToken" data-tip="Copy the token of the latest sent file, so someone else can download it">Copy Token</button></div>
         <div class="hint">Copies the file token of the latest sent file.</div>
       </div>
       <button class="send" id="send" disabled data-tip="Compress, encrypt and upload the selection to Discord">Send</button>
@@ -395,13 +374,12 @@
     </section>
 
     <section class="panel" id="downloadPanel">
-      <!-- <div class="hint">OverShare searches Discord for transfers whose file tokens are stored in this extension.</div> -->
       <div class="open-warning open-only">Open channel: every file sent here is listed, no file tokens needed.</div>
       <div class="row token-actions token-only">
-        <button class="mini" id="exportStorage" data-tip="Save all stored file tokens to a JSON file">Export Tokens</button>
-        <button class="mini" id="importStorage" data-tip="Add file tokens from an exported JSON file">Import Tokens</button>
-        <button class="mini delete-tokens" id="deleteStorage" data-tip="Delete every stored token and its files from Discord">Delete Tokens</button>
-        <input type="file" id="importFile" accept="application/json,.json" />
+        <button class="mini" id="exportTokens" data-tip="Save all stored file tokens to a JSON file">Export Tokens</button>
+        <button class="mini" id="importTokens" data-tip="Add file tokens from an exported JSON file">Import Tokens</button>
+        <button class="mini delete-tokens" id="deleteTokens" data-tip="Delete every stored token and its files from Discord">Delete Tokens</button>
+        <input type="file" id="importTokensFile" accept="application/json,.json" />
       </div>
       <label for="downloadToken" class="token-only">File token</label>
       <div class="row token-only">
@@ -412,11 +390,11 @@
       <div class="progress" id="downloadProgress"><div class="bar" id="downloadBar"></div></div>
     </section>
 
-    <section class="panel configPanel" id="configPanel">
+    <section class="panel config-panel" id="configPanel">
       <div class="row config-head">
         <label>Configurations</label>
         <div class="row">
-          <button class="mini" id="exportAllConfig" data-tip="Save all configurations, including their bot tokens and file tokens, to one JSON file">Export All</button>
+          <button class="mini" id="exportAllConfigs" data-tip="Save all configurations, including their bot tokens and file tokens, to one JSON file">Export All</button>
           <button class="mini primary" id="newConfig" data-tip="Add a bot token and channel as a new configuration">New</button>
         </div>
       </div>

@@ -1,7 +1,7 @@
 "use strict";
 
-const ids = ["file", "folder", "folderBtn", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "update", "keyCopy", "downloadToken", "loadToken", "deleteStorage", "botStatus", "botDot", "flyer", "tabs", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportStorage", "importStorage", "importFile", "mute", "tooltip", "clearPick",
-  "tabConfig", "configPanel", "configLabel", "configList", "configDrop", "exportAllConfig", "newConfig", "importConfigFile", "configForm", "configFormTitle", "configName", "configToken", "configChannel", "configOpen", "copyConfigName", "copyBotToken", "copyConfigChannel", "cancelConfig", "saveConfig",
+const ids = ["file", "folder", "pickFolder", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "update", "copyToken", "downloadToken", "loadToken", "deleteTokens", "botStatus", "botDot", "flyer", "tabs", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportTokens", "importTokens", "importTokensFile", "mute", "tooltip", "clearPick",
+  "tabConfig", "configPanel", "configLabel", "configList", "configDrop", "exportAllConfigs", "newConfig", "importConfigFile", "configForm", "configFormTitle", "configName", "configToken", "configChannel", "configOpen", "copyConfigName", "copyBotToken", "copyConfigChannel", "cancelConfig", "saveConfig",
   "dialog", "dialogMessage", "dialogOk", "dialogCancel"];
 const els = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 let selection = null;
@@ -20,7 +20,7 @@ const NO_CONFIG = { id: "", name: "", token: "", channelId: "", open: false };
 let configs = [];
 let config = NO_CONFIG;
 let botCheckRun = 0;
-let currentTab = "send", lastMainTab = "send";
+let currentTab = "send";
 let editingId = null; // the configuration the form is editing, or null for a new one
 
 els.version.textContent = "v" + chrome.runtime.getManifest().version;
@@ -101,17 +101,13 @@ function setStatus(message, kind = "info") {
   els.status.textContent = message; els.status.className = `status ${kind}`;
   if (kind !== "info" && !els.downloadPanel.classList.contains("active")) replayAnimation(els.status, "pop");
 }
-function loadedFilesStatus() {
-  const kind = goneFiles ? "err" : incompleteFiles ? "warn" : "ok";
-  return { message: `Loaded ${shownFiles} files · ${loadedChunks} chunks · ${humanSize(loadedSize)}`, kind };
-}
 function updateLoadedFilesStatus() {
-  const status = loadedFilesStatus();
-  setStatus(status.message, status.kind);
+  const kind = goneFiles ? "err" : incompleteFiles ? "warn" : "ok";
+  setStatus(`Loaded ${shownFiles} files · ${loadedChunks} chunks · ${humanSize(loadedSize)}`, kind);
 }
 function escapeHtml(value) { return String(value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 
-async function readEntry(entry, prefix) {
+function readEntry(entry, prefix) {
   return new Promise((resolve) => {
     if (entry.isFile) entry.file((file) => resolve([{ file, path: prefix + entry.name }]), () => resolve([]));
     else if (entry.isDirectory) {
@@ -136,10 +132,9 @@ const showsSlash = (kind) => kind === "folder" || kind === "multiplefiles";
 // Selecting only picks the transfer ID and key; the engine reads the files while sending.
 function prepareSelection() {
   if (!selection) return;
-  const hex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
   payload = {
     kind: selection.kind, name: selection.name, files: selection.files,
-    sha: hex(crypto.getRandomValues(new Uint8Array(ID_BYTES))), symmetricKey: base64urlEncode(crypto.getRandomValues(new Uint8Array(32))),
+    sha: randomHex(ID_BYTES), symmetricKey: base64urlEncode(crypto.getRandomValues(new Uint8Array(32))),
     originalSize: selection.files.reduce((n, r) => n + r.file.size, 0), entries: selection.files.length,
   };
   els.drop.classList.add("has-file");
@@ -150,15 +145,15 @@ function prepareSelection() {
   requestAnimationFrame(() => replayAnimation(els.send, "ready"));
   refreshSendState();
 }
-function clearSelection() {
-  selection = null; payload = null;
-  els.file.value = ""; els.folder.value = "";
-  els.drop.classList.remove("has-file");
-  els.dropLabel.textContent = "Click for a file, or drop a file / folder";
-}
+// Forgets the selection but leaves the drop zone showing it.
 function clearSelectionData() {
   selection = null; payload = null;
   els.file.value = ""; els.folder.value = "";
+}
+function clearSelection() {
+  clearSelectionData();
+  els.drop.classList.remove("has-file");
+  els.dropLabel.textContent = "Click for a file, or drop a file / folder";
 }
 function refreshSendState() {
   if (activeUpload) {
@@ -188,9 +183,8 @@ function applyUploadState(state) {
   if (state.active) {
     activeUpload = { ...activeUpload, ...state };
     els.progress.classList.add("show");
-    const percent = state.totalBytes
-      ? Math.min(100, Math.round((state.bytesSent / state.totalBytes) * 100))
-      : Math.min(100, Math.round(((state.sent || 0) / (state.total || 1)) * 100));
+    // An empty file has no bytes to count, so it is done once its chunk is sent.
+    const percent = state.totalBytes ? Math.min(100, Math.round((state.bytesSent / state.totalBytes) * 100)) : state.sent ? 100 : 0;
     els.bar.style.width = percent + "%";
     if (state.cleaning) setStatus(`Removing sent chunks of ${state.name}…`, "info");
     else if (state.canceling) setStatus(`Canceling upload… ${percent}%`, "info");
@@ -254,7 +248,7 @@ function launchFlyer(emoji, className) {
 // waiting for the audio device to wake up.
 let audioContext = null;
 function audio() {
-  if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: "interactive" });
+  if (!audioContext) audioContext = new AudioContext({ latencyHint: "interactive" });
   if (audioContext.state === "suspended") audioContext.resume().catch(() => {});
   return audioContext;
 }
@@ -295,7 +289,7 @@ let botState = "checking";
 // The header dot, the status line and the "In use" label of the configuration list follow the bot check.
 function setBotStatus(message, kind) {
   botState = kind;
-  els.botStatus.textContent = message; els.botStatus.className = `tokenstatus ${kind}`;
+  els.botStatus.textContent = message; els.botStatus.className = `bot-status ${kind}`;
   els.botDot.className = `dot ${kind}`;
   const inUse = els.configList.querySelector(".in-use");
   if (inUse) { inUse.className = `in-use ${kind}`; inUse.title = message; }
@@ -332,8 +326,6 @@ function requireConfig() { if (!config.id) throw new Error("add a configuration 
 // name is "send", "download" or "config".
 function showTab(name) {
   currentTab = name;
-  els.tabs.hidden = false;
-  lastMainTab = name === "config" ? lastMainTab : name;
   els.tabs.classList.toggle("download", name === "download");
   els.tabs.classList.toggle("config", name === "config");
   els.tabSend.classList.toggle("active", name === "send");
@@ -350,15 +342,12 @@ function showTab(name) {
 // closes). Reopening the popup, say after copying the bot token, lands back there.
 function saveViewState() {
   const form = els.configForm.hidden ? null : { editingId, name: els.configName.value, token: els.configToken.value, channelId: els.configChannel.value, open: els.configOpen.checked };
-  chrome.storage.session.set({ view: { tab: currentTab, lastMainTab, form } }).catch(() => {});
+  chrome.storage.session.set({ view: { tab: currentTab, form } }).catch(() => {});
 }
 async function restoreViewState() {
   const { view } = await chrome.storage.session.get("view").catch(() => ({}));
   if (!configs.length) showTab("config");
-  else if (view) {
-    lastMainTab = view.lastMainTab || "send";
-    showTab(view.tab === "settings" ? "config" : view.tab || "send");
-  }
+  else if (view) showTab(view.tab || "send");
   // With nothing set up yet, Config opens with the new configuration form.
   if (!view?.form && configs.length) return;
   openConfigForm(true, configs.find((item) => item.id === view?.form?.editingId));
@@ -369,7 +358,7 @@ async function restoreViewState() {
     saveViewState();
   }
 }
-async function storedKeys() { return configTokens(await chrome.storage.local.get(null), config.id); }
+async function storedTokens() { return configTokens(await chrome.storage.local.get(null), config.id); }
 async function storedKey(sha) {
   if (config.open) return OPEN_MASTER_KEY;
   const name = tokenKey(config.id, sha);
@@ -378,7 +367,8 @@ async function storedKey(sha) {
 
 // ---- Configurations ----
 
-function newConfigId() { return [...crypto.getRandomValues(new Uint8Array(4))].map((b) => b.toString(16).padStart(2, "0")).join(""); }
+function randomHex(byteCount) { return [...crypto.getRandomValues(new Uint8Array(byteCount))].map((b) => b.toString(16).padStart(2, "0")).join(""); }
+function newConfigId() { return randomHex(4); }
 // Before 5.0 there was a single bot, stored as botToken and channelId, with file
 // tokens stored as "<id>.symmetricKey". They become the first configuration.
 async function migrateLegacyStorage(data) {
@@ -524,7 +514,7 @@ function updateItemButtons() {
     deleteButton.disabled = deleting || downloading;
     deleteButton.textContent = deleting ? "Deleting…" : "Delete";
   }
-  els.deleteStorage.disabled = deletingShas.size > 0;
+  els.deleteTokens.disabled = deletingShas.size > 0;
 }
 function timeAgo(time) {
   const minutes = Math.floor((Date.now() - time) / 60000);
@@ -553,7 +543,7 @@ function fileRow(file, position) {
   const copyButton = document.createElement("button"); copyButton.className = "copy-token"; copyButton.textContent = "Copy"; copyButton.dataset.tip = "Copy this file's token to share it";
   copyButton.addEventListener("click", () => copyFileToken(file, copyButton));
   const deleteButton = document.createElement("button"); deleteButton.className = "delete-file"; deleteButton.textContent = "Delete"; deleteButton.dataset.tip = "Delete this file from Discord and local storage";
-  deleteButton.addEventListener("click", () => deleteFileToken(file));
+  deleteButton.addEventListener("click", () => deleteFile(file));
   const secondaryActions = document.createElement("div"); secondaryActions.className = "secondary-actions";
   // Everyone with the bot sees an open channel's files, so there is no token to share.
   if (config.open) secondaryActions.append(deleteButton);
@@ -571,7 +561,7 @@ async function copyFileToken(file, button) {
     setStatus("File token copied to clipboard.", "ok");
   } catch (error) { setStatus("Copy failed: " + error.message, "err"); }
 }
-async function deleteFileToken(file) {
+async function deleteFile(file) {
   if (!await storedKey(file.sha)) { setStatus("Delete failed: token is not stored locally.", "err"); return; }
   const question = config.open ? `Delete "${file.name}" from the open channel? It goes for everyone who shares it. This cannot be undone.`
     : `Delete "${file.name}" from Discord and local storage? This cannot be undone.`;
@@ -584,7 +574,7 @@ function startDelete(shas, label) {
   deletingShas = new Set([...deletingShas, ...shas]);
   updateItemButtons();
   setStatus(`Deleting ${label}…`, "info");
-  transferChannel.postMessage({ type: "startDelete", job: { config, shas, label } });
+  engineChannel.postMessage({ type: "startDelete", job: { config, shas, label } });
 }
 function applyDeleteState(state) {
   deletingShas = new Set(state.pendingShas || []);
@@ -609,9 +599,9 @@ async function refreshFiles() {
   els.fileList.textContent = "";
   listFooter = document.createElement("div"); listFooter.className = "empty";
   els.fileList.appendChild(listFooter);
-  const keys = await storedKeys();
+  const tokens = await storedTokens();
   if (run !== listRun) return;
-  scanner = new TransferScanner(config, config.open ? null : keys);
+  scanner = new TransferScanner(config, config.open ? null : tokens);
   updateLoadedFilesStatus();
   loadMoreFiles();
 }
@@ -664,10 +654,10 @@ async function downloadFile(file) {
     requireConfig();
     let dirHandle = null;
     if (file.kind === "folder" && window.showDirectoryPicker) dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
-    const key = `${file.sha}.${await storedKey(file.sha)}`;
+    const token = `${file.sha}.${await storedKey(file.sha)}`;
     activeDownload = { active: true, sha: file.sha, name: file.name, phase: "downloading", done: 0, totalBytes: 0 };
     applyDownloadState(activeDownload);
-    transferChannel.postMessage({ type: "startDownload", job: { config, key, sha: file.sha, name: file.name, kind: file.kind, dirHandle } });
+    engineChannel.postMessage({ type: "startDownload", job: { config, token, sha: file.sha, name: file.name, kind: file.kind, dirHandle } });
   } catch (error) { if (error.name !== "AbortError") setStatus("Download failed: " + error.message, "err"); }
 }
 function applyDownloadState(state) {
@@ -697,7 +687,7 @@ els.clearPick.addEventListener("click", (event) => {
   setStatus("Selection cleared.", "info");
 });
 els.file.addEventListener("change", (event) => { const files = [...event.target.files]; if (files.length === 1) setFileSelection(files[0]); else if (files.length) setBundleSelection(files.map((file) => ({ file, path: file.name }))); });
-els.folderBtn.addEventListener("click", () => els.folder.click());
+els.pickFolder.addEventListener("click", () => els.folder.click());
 els.folder.addEventListener("change", (event) => setFolderSelection(event.target.files));
 els.drop.addEventListener("dragover", (event) => { event.preventDefault(); els.drop.classList.add("drag"); });
 els.drop.addEventListener("dragleave", () => els.drop.classList.remove("drag"));
@@ -713,13 +703,13 @@ els.drop.addEventListener("drop", async (event) => {
   }
   else if (event.dataTransfer.files.length) { const files = [...event.dataTransfer.files]; if (files.length === 1) setFileSelection(files[0]); else setBundleSelection(files.map((file) => ({ file, path: file.name }))); }
 });
-els.keyCopy.addEventListener("click", async () => {
+els.copyToken.addEventListener("click", async () => {
   // The latest send wins: the one in progress, else the last finished one, else the current selection.
   const token = activeUpload?.symmetricKey ? `${activeUpload.sha}.${activeUpload.symmetricKey}`
     : lastSentToken || (payload ? `${payload.sha}.${payload.symmetricKey}` : "");
   if (!token) { setStatus("Send a file first.", "info"); return; }
   await navigator.clipboard.writeText(token);
-  flashCopied(els.keyCopy);
+  flashCopied(els.copyToken);
   setStatus("File token copied to clipboard.", "ok");
 });
 els.downloadToken.addEventListener("keydown", (event) => { if (event.key === "Enter") els.loadToken.click(); });
@@ -742,14 +732,14 @@ function downloadJson(filename, value) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 // Token exports hold only file tokens, never the bot token or channel ID.
-els.exportStorage.addEventListener("click", async () => {
+els.exportTokens.addEventListener("click", async () => {
   if (!config.id) { setStatus("Add a configuration in Config first.", "err"); return; }
-  const tokens = await storedKeys();
+  const tokens = await storedTokens();
   downloadJson("overshare-tokens.json", tokenFileEntries(tokens));
   setStatus(`${tokens.length} file token(s) exported.`, "ok");
 });
-els.importStorage.addEventListener("click", () => els.importFile.click());
-els.importFile.addEventListener("change", async (event) => {
+els.importTokens.addEventListener("click", () => els.importTokensFile.click());
+els.importTokensFile.addEventListener("change", async (event) => {
   const file = event.target.files[0];
   if (!file) return;
   try {
@@ -763,13 +753,13 @@ els.importFile.addEventListener("change", async (event) => {
   } catch (error) { setStatus("Import failed: " + error.message, "err"); }
   event.target.value = "";
 });
-els.deleteStorage.addEventListener("click", async () => {
-  const tokens = await storedKeys();
+els.deleteTokens.addEventListener("click", async () => {
+  const tokens = await storedTokens();
   if (!tokens.length) { setStatus("No stored file tokens to delete.", "info"); return; }
   if (!await askConfirm(`Delete ${tokens.length} file token(s) and their Discord files? This cannot be undone.`, { ok: "Delete all", danger: true })) return;
   try { requireConfig(); } catch (error) { setStatus("Delete failed: " + error.message, "err"); return; }
   els.downloadToken.value = "";
-  startDelete([...shasFromKeys(tokens)], `${tokens.length} file(s)`);
+  startDelete([...shasFromTokens(tokens)], `${tokens.length} file(s)`);
 });
 els.mute.addEventListener("click", () => {
   muted = !muted;
@@ -782,12 +772,12 @@ els.send.addEventListener("click", async () => {
     if (activeUpload.paused) {
       activeUpload.paused = false;
       refreshSendState();
-      transferChannel.postMessage({ type: "resumeUpload" });
+      engineChannel.postMessage({ type: "resumeUpload" });
       return;
     }
     activeUpload.canceling = true;
     refreshSendState();
-    transferChannel.postMessage({ type: "cancelUpload" });
+    engineChannel.postMessage({ type: "cancelUpload" });
     return;
   }
   if (!payload) return;
@@ -797,8 +787,8 @@ els.send.addEventListener("click", async () => {
   const symmetricKey = config.open ? OPEN_MASTER_KEY : payload.symmetricKey;
   try {
     // File objects cross to the engine by reference; their contents are read there, piece by piece.
-    transferChannel.postMessage({ type: "startUpload", job: { metadata, config, symmetricKey, files: payload.files } });
-    activeUpload = { name: payload.name, sha: payload.sha, symmetricKey, configId: config.id, open: !!config.open, total: null, sent: 0 };
+    engineChannel.postMessage({ type: "startUpload", job: { metadata, config, symmetricKey, files: payload.files } });
+    activeUpload = { name: payload.name, sha: payload.sha, symmetricKey, configId: config.id, open: !!config.open };
     // Each send gets a fresh ID and key, so the selection is used up.
     clearSelectionData();
     refreshSendState();
@@ -811,7 +801,7 @@ els.tabSend.addEventListener("click", () => showTab("send")); els.tabDownload.ad
 els.tabConfig.addEventListener("click", () => showTab("config"));
 
 els.newConfig.addEventListener("click", () => openConfigForm(true));
-els.exportAllConfig.addEventListener("click", exportAllConfigs);
+els.exportAllConfigs.addEventListener("click", exportAllConfigs);
 els.cancelConfig.addEventListener("click", () => openConfigForm(false));
 for (const field of [els.configName, els.configToken, els.configChannel]) field.addEventListener("input", saveViewState);
 els.configChannel.addEventListener("input", updateOpenBox);
@@ -918,12 +908,11 @@ async function configExport(item, storage = null) {
   return { overshareConfig: 1, name: item.name, botToken: item.token, channelId: item.channelId, open: !!item.open, files: tokenFileEntries(tokens) };
 }
 async function exportConfig(item) {
-  if (!await askConfirm("This export contains the bot token, which gives full control of the bot: whoever has it can read, send and delete everything the bot can reach.\n\nShare the exported file only with people you trust.", { ok: "Export", danger: true })) return false;
+  if (!await askConfirm("This export contains the bot token, which gives full control of the bot: whoever has it can read, send and delete everything the bot can reach.\n\nShare the exported file only with people you trust.", { ok: "Export", danger: true })) return;
   const data = await configExport(item);
   const safeName = item.name.replace(/[^\w-]+/g, "_");
   downloadJson(`overshare-config-${safeName}.json`, [data]);
   setStatus(`${item.name} exported with ${Object.keys(data.files).length} file token(s). The file holds the bot token: keep it private.`, "ok");
-  return true;
 }
 async function exportAllConfigs() {
   if (!configs.length) { setStatus("Add a configuration in Config first.", "err"); return; }
@@ -988,10 +977,10 @@ async function deleteConfig(item) {
   else renderConfigs();
   setStatus(`Configuration ${item.name} deleted.`, "ok");
 }
-const transferChannel = new BroadcastChannel("overshare");
-transferChannel.onmessage = (event) => {
+const engineChannel = new BroadcastChannel(ENGINE_CHANNEL);
+engineChannel.onmessage = (event) => {
   const message = event.data || {};
-  if (message.type === "uploadState") applyUploadState(message.send);
+  if (message.type === "uploadState") applyUploadState(message.state);
   else if (message.type === "downloadState") applyDownloadState(message.state);
   else if (message.type === "deleteState") applyDeleteState(message.state);
 };
@@ -1012,7 +1001,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   // Restore the stored upload before asking the engine, so its reply can confirm or clear it.
   if (data.activeUpload) activeUpload = { ...data.activeUpload, configId: data.activeUpload.config?.id, restored: true };
   refreshSendState();
-  chrome.runtime.sendMessage({ target: "background", type: "ensureEngine" }).then(() => transferChannel.postMessage({ type: "hello" })).catch(() => {});
+  chrome.runtime.sendMessage({ target: "background", type: "ensureEngine" }).then(() => engineChannel.postMessage({ type: "hello" })).catch(() => {});
   checkBot();
   await restoreViewState();
 })();
