@@ -274,9 +274,8 @@ function playTone(frequency, duration, delay = 0, { type = "sine", volume = 0.04
   } catch (_) {}
 }
 function playSound(name) {
-  if (name === "hover") playTone(1200, 0.018);
   // An instant attack and a fast pitch drop make a crisp tick.
-  if (name === "click") playTone(2200, 0.012, 0, { type: "triangle", volume: 0.06, attack: 0.001, glideTo: 900 });
+  if (name === "click") playTone(2200, 0.012, 0, { type: "triangle", volume: 0.12, attack: 0.001, glideTo: 900 });
   if (name === "send") { const loud = { volume: 0.08 }; playTone(523, 0.1, 0, loud); playTone(659, 0.1, 0.09, loud); playTone(784, 0.16, 0.18, loud); }
   // A bright rising sixth with a ringing top note, as loud as send.
   if (name === "download") { const bell = { type: "triangle", volume: 0.1 }; playTone(784, 0.1, 0, bell); playTone(1319, 0.35, 0.09, bell); playTone(659, 0.35, 0.09, { volume: 0.03 }); }
@@ -289,9 +288,6 @@ function playSound(name) {
     playTone(262, 0.42, 0.15, { ...droop, glideTo: 220 }); playTone(131, 0.42, 0.15, { volume: 0.06, glideTo: 110 });
   }
 }
-let hoveredButton = null;
-document.addEventListener("mouseover", (event) => { const button = event.target.closest("button"); if (button && button !== hoveredButton) { hoveredButton = button; playSound("hover"); } });
-document.addEventListener("mouseout", (event) => { if (!event.relatedTarget?.closest?.("button")) hoveredButton = null; });
 document.addEventListener("click", (event) => { const button = event.target.closest("button"); if (button && button !== els.mute && button !== els.tabConfig) playSound("click"); }, true);
 
 let botState = "checking";
