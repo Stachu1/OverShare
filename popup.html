@@ -17,6 +17,53 @@
       --ok: #3ba55d;
       --err: #ed4245;
       --warn: #f0a04b;
+      --tip-bg: #111217;
+      --idle: #4f5260;
+      --idle-hover: #5d6070;
+      --idle-text: #a3a6b1;
+      --thumb-hover: #565866;
+      --danger-text: #ff8a8a;
+      --danger-border: #8e3e45;
+      --danger-bg: #4a252b;
+      --warn-border: #7a5427;
+      --overlay: rgba(0, 0, 0, 0.88), rgba(0, 0, 0, 0.6);
+      --scheme: dark;
+    }
+    /* Themes, picked with the header button: default, light and super dark */
+    :root[data-theme="light"] {
+      --bg: #f3f4f7;
+      --panel: #ffffff;
+      --panel-2: #e6e8ee;
+      --border: #cfd2db;
+      --text: #1d1f26;
+      --muted: #5f6270;
+      --tip-bg: #ffffff;
+      --idle: #9a9daa;
+      --idle-hover: #868998;
+      --idle-text: #eceef2;
+      --thumb-hover: #a9acb8;
+      --danger-text: #c62f33;
+      --danger-border: #e3a2a5;
+      --danger-bg: #fbe3e4;
+      --warn: #b86a10;
+      --warn-border: #e2b77f;
+      --overlay: rgba(243, 244, 247, 0.94), rgba(243, 244, 247, 0.75);
+      --scheme: light;
+    }
+    :root[data-theme="black"] {
+      --bg: #000000;
+      --panel: #0b0b0e;
+      --panel-2: #131318;
+      --border: #24252d;
+      --text: #d9dae0;
+      --muted: #7d7f8a;
+      --tip-bg: #000000;
+      --idle: #2c2e36;
+      --idle-hover: #3a3c47;
+      --idle-text: #7d7f8a;
+      --thumb-hover: #3a3c47;
+      --danger-bg: #2a1215;
+      --overlay: rgba(0, 0, 0, 0.94), rgba(0, 0, 0, 0.75);
     }
     * { box-sizing: border-box; }
     html, body {
@@ -29,7 +76,7 @@
       background: var(--bg);
       color: var(--text);
       font-size: 14px;
-      color-scheme: dark;
+      color-scheme: var(--scheme);
       scrollbar-width: thin;                     /* Firefox */
       scrollbar-color: var(--border) transparent;
     }
@@ -39,7 +86,7 @@
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-    ::-webkit-scrollbar-thumb:hover { background: #565866; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--thumb-hover); }
     header {
       display: flex; align-items: center; gap: 9px;
       padding: 11px 14px; background: var(--panel);
@@ -179,7 +226,7 @@
     /* The send button's colour and glow follow its state: gray (nothing picked),
        green (ready), red (cancel). --glow is the state's colour as RGB. */
     button.send {
-      --btn: #4f5260; --btn-hover: #4f5260; --glow: 79, 82, 96;
+      --btn: var(--idle); --btn-hover: var(--idle); --glow: 79, 82, 96;
       width: 100%; padding: 10px; background: var(--btn); color: #fff;
       border: none; border-radius: 8px; font-size: 14px; font-weight: 600;
       cursor: pointer; transition: background 0.15s, box-shadow 0.2s, transform 0.08s;
@@ -190,7 +237,7 @@
     button.send.ready { animation: ready-pulse 0.9s ease-out; }
     @keyframes ready-pulse { 0% { box-shadow: 0 0 0 0 rgba(var(--glow), 0.7); } 100% { box-shadow: 0 0 0 12px rgba(var(--glow), 0); } }
     button:active:not(:disabled) { transform: scale(0.96); }
-    button.send:disabled { color: #a3a6b1; cursor: not-allowed; }
+    button.send:disabled { color: var(--idle-text); cursor: not-allowed; }
     button.send.cancel:disabled { opacity: 0.6; }
 
     /* Copy buttons flash a glow when the token lands on the clipboard */
@@ -204,7 +251,7 @@
     /* Hover descriptions for buttons (data-tip), placed by popup.js */
     .tooltip {
       position: fixed; z-index: 10; max-width: 220px; padding: 6px 9px;
-      background: #111217; color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+      background: var(--tip-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
       font-size: 11px; line-height: 1.4; pointer-events: none;
       box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
       opacity: 0; transform: translateY(3px); transition: opacity 0.12s, transform 0.12s;
@@ -214,7 +261,7 @@
     /* In-popup confirmation: a dimmed overlay that blocks the page behind it */
     .dialog {
       position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center;
-      padding: 16px; background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.88) 0%, rgba(0, 0, 0, 0.6) 70%); animation: dialog-in 0.16s ease-out;
+      padding: 16px; background: radial-gradient(ellipse at center, var(--overlay)); animation: dialog-in 0.16s ease-out;
     }
     .dialog[hidden] { display: none; }
     .dialog .box { display: flex; flex-direction: column; gap: 14px; max-width: 300px; text-align: center; }
@@ -225,8 +272,8 @@
     .dialog .ok:hover { background: var(--accent-hover); box-shadow: 0 0 14px rgba(88, 101, 242, 0.55); }
     .dialog .ok.danger { background: var(--err); }
     .dialog .ok.danger:hover { background: #c93b3e; box-shadow: 0 0 14px rgba(237, 66, 69, 0.55); }
-    .dialog .cancel { background: #4f5260; }
-    .dialog .cancel:hover { background: #5d6070; box-shadow: 0 0 14px rgba(154, 156, 166, 0.45); }
+    .dialog .cancel { background: var(--idle); }
+    .dialog .cancel:hover { background: var(--idle-hover); box-shadow: 0 0 14px rgba(154, 156, 166, 0.45); }
     @keyframes dialog-in { from { opacity: 0; } }
 
     input:disabled, button.mini:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -305,16 +352,16 @@
     .secondary-actions button { flex: 1; }
     .item .copy-token { padding: 5px 7px; background: transparent; color: var(--muted); border: 1px solid var(--border); font-size: 11px; font-weight: 500; }
     .item .copy-token:hover:not(:disabled) { background: var(--panel); border-color: var(--muted); color: var(--text); }
-    .item .delete-file { padding: 5px 7px; background: transparent; color: #ff8a8a; border: 1px solid #8e3e45; font-size: 11px; font-weight: 500; }
-    .item .delete-file:hover:not(:disabled) { background: #4a252b; border-color: var(--err); color: #fff; }
+    .item .delete-file { padding: 5px 7px; background: transparent; color: var(--danger-text); border: 1px solid var(--danger-border); font-size: 11px; font-weight: 500; }
+    .item .delete-file:hover:not(:disabled) { background: var(--danger-bg); border-color: var(--err); color: #fff; }
     .copy-send-token { font-size: 11px; padding: 7px 10px; }
     .token-actions { justify-content: center; }
     .token-actions .mini { width: 108px; padding: 7px 8px; }
-    .token-actions .delete-tokens { color: #ff8a8a; border-color: #8e3e45; }
-    .token-actions .delete-tokens:hover { color: #fff; border-color: var(--err); background: #4a252b; }
+    .token-actions .delete-tokens { color: var(--danger-text); border-color: var(--danger-border); }
+    .token-actions .delete-tokens:hover { color: #fff; border-color: var(--err); background: var(--danger-bg); }
     /* Open channels share one key with everyone, so token controls give way to a warning */
     body.open-channel .token-only, body:not(.open-channel) .open-only { display: none; }
-    .open-warning { font-size: 12px; line-height: 1.5; color: var(--warn); padding: 8px 10px; border: 1px solid #7a5427; border-radius: 8px; background: rgba(240, 160, 75, 0.08); }
+    .open-warning { font-size: 12px; line-height: 1.5; color: var(--warn); padding: 8px 10px; border: 1px solid var(--warn-border); border-radius: 8px; background: rgba(240, 160, 75, 0.08); }
     .open-tag { color: var(--warn); font-weight: 600; }
     .check { display: flex; align-items: center; gap: 7px; margin: 0; cursor: pointer; }
     .check input { margin: 0; accent-color: var(--accent); cursor: pointer; }
@@ -338,6 +385,7 @@
     <h1>OverShare</h1>
     <span class="version" id="version"></span>
     <a class="update" id="update" hidden href="https://github.com/Stachu1/OverShare/archive/refs/heads/main.zip" data-tip="A newer version is on GitHub. Download the zip and load it in place of this one">Update Available</a>
+    <button class="icon-button" id="theme" data-tip="Switch theme: default, light or super dark">🌗</button>
     <button class="icon-button" id="mute" data-tip="Mute or unmute interface sounds">🔊</button>
   </header>
 

@@ -1,6 +1,6 @@
 "use strict";
 
-const ids = ["file", "folder", "pickFolder", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "update", "copyToken", "downloadToken", "loadToken", "deleteTokens", "botStatus", "botDot", "flyer", "tabs", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportTokens", "importTokens", "importTokensFile", "mute", "tooltip", "clearPick",
+const ids = ["file", "folder", "pickFolder", "drop", "dropLabel", "send", "progress", "bar", "status", "version", "update", "copyToken", "downloadToken", "loadToken", "deleteTokens", "botStatus", "botDot", "flyer", "tabs", "tabSend", "tabDownload", "sendPanel", "downloadPanel", "fileList", "downloadProgress", "downloadBar", "exportTokens", "importTokens", "importTokensFile", "mute", "theme", "tooltip", "clearPick",
   "tabConfig", "configPanel", "configLabel", "configList", "configDrop", "exportAllConfigs", "newConfig", "importConfigFile", "configForm", "configFormTitle", "configName", "configToken", "configChannel", "configOpen", "copyConfigName", "copyBotToken", "copyConfigChannel", "cancelConfig", "saveConfig",
   "dialog", "dialogMessage", "dialogOk", "dialogCancel"];
 const els = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
@@ -784,6 +784,21 @@ els.deleteTokens.addEventListener("click", async () => {
   els.downloadToken.value = "";
   startDelete([...transferIdsFromTokens(tokens)], `${tokens.length} file(s)`);
 });
+const THEMES = [{ name: "default", icon: "🌗", label: "Default" }, { name: "light", icon: "☀️", label: "Light" }, { name: "black", icon: "🌑", label: "Super dark" }];
+function applyTheme(name) {
+  const theme = THEMES.find((item) => item.name === name) || THEMES[0];
+  if (theme.name === "default") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = theme.name;
+  els.theme.textContent = theme.icon;
+  els.theme.dataset.theme = theme.name;
+  els.theme.dataset.tip = `Theme: ${theme.label}. Click to switch to default, light or super dark`;
+}
+els.theme.addEventListener("click", () => {
+  const index = THEMES.findIndex((item) => item.name === els.theme.dataset.theme);
+  const next = THEMES[(index + 1) % THEMES.length].name;
+  applyTheme(next);
+  chrome.storage.local.set({ theme: next });
+});
 els.mute.addEventListener("click", () => {
   muted = !muted;
   els.mute.textContent = muted ? "🔇" : "🔊";
@@ -1020,6 +1035,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   lastSentToken = data[lastTokenKey(config.id)] || "";
   renderConfigs();
   applyOpenMode();
+  applyTheme(data.theme);
   muted = !!data.muted; els.mute.textContent = muted ? "🔇" : "🔊";
   // Restore the stored upload before asking the engine, so its reply can confirm or clear it.
   if (data.activeUpload) activeUpload = { ...data.activeUpload, transferId: data.activeUpload.transferId ?? data.activeUpload.sha, configId: data.activeUpload.config?.id, restored: true };
