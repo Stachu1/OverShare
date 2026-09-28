@@ -289,7 +289,7 @@ function playSound(name) {
     playTone(262, 0.42, 0.15, { ...droop, glideTo: 220 }); playTone(131, 0.42, 0.15, { volume: 0.06, glideTo: 110 });
   }
 }
-document.addEventListener("click", (event) => { const button = event.target.closest("button"); if (button && button !== els.mute && button !== els.tabConfig) playSound("click"); }, true);
+document.addEventListener("click", (event) => { const button = event.target.closest("button"); if (button && button !== els.mute) playSound("click"); }, true);
 
 let botState = "checking";
 // The header dot, the status line and the "In use" label of the configuration list follow the bot check.
