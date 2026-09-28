@@ -276,7 +276,8 @@ function playTone(frequency, duration, delay = 0, { type = "sine", volume = 0.04
 function playSound(name) {
   // An instant attack and a fast pitch drop make a crisp tick.
   if (name === "click") playTone(2200, 0.012, 0, { type: "triangle", volume: 0.12, attack: 0.001, glideTo: 900 });
-  if (name === "send") { const loud = { volume: 0.08 }; playTone(523, 0.1, 0, loud); playTone(659, 0.1, 0.09, loud); playTone(784, 0.16, 0.18, loud); }
+  // A quick climb up a G major chord to a ringing top note, a step livelier than download.
+  if (name === "send") { const bell = { type: "triangle", volume: 0.1 }; playTone(587, 0.08, 0, bell); playTone(784, 0.08, 0.07, bell); playTone(1175, 0.35, 0.14, bell); playTone(988, 0.35, 0.14, { volume: 0.03 }); }
   // A bright rising sixth with a ringing top note, as loud as send.
   if (name === "download") { const bell = { type: "triangle", volume: 0.1 }; playTone(784, 0.1, 0, bell); playTone(1319, 0.35, 0.09, bell); playTone(659, 0.35, 0.09, { volume: 0.03 }); }
   if (name === "connected") { const loud = { volume: 0.07 }; playTone(880, 0.12, 0, loud); playTone(1175, 0.45, 0.1, loud); }
