@@ -32,7 +32,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 # These match shared.js and engine.js.
 API = "https://discord.com/api/v10"
-USER_AGENT = "DiscordBot (overshare, 3.0)"  # Discord rejects bot requests with other agents
+USER_AGENT = "DiscordBot (OverShare, 6.0.0)"  # Discord rejects bot requests with other agents
 MANIFEST_MARKER = "OVERSHARE|"
 CHUNK_BYTES = 20 * 1024 * 1024
 BATCH_CHUNKS = 10  # Discord takes up to 10 attachments per message
