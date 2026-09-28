@@ -588,12 +588,29 @@ function applyDeleteState(state) {
     const { outcome, transferIds, text } = state.finished;
     setStatus(text, outcome === "ok" ? "ok" : "err");
     if (outcome === "ok" && els.downloadPanel.classList.contains("active")) {
-      const rows = transferIds.map((transferId) => itemControls.get(transferId)?.item).filter(Boolean);
-      rows.forEach((row) => row.classList.add("removing"));
-      setTimeout(refreshFiles, rows.length ? 280 : 0);
+      const shown = transferIds.filter((transferId) => itemControls.has(transferId));
+      shown.forEach((transferId) => itemControls.get(transferId).item.classList.add("removing"));
+      // Only a delete of files not yet in the list (Delete all) needs a fresh scan.
+      if (shown.length === transferIds.length) setTimeout(() => removeFileRows(shown), 280);
+      else setTimeout(refreshFiles, shown.length ? 280 : 0);
     }
   } else if (state.current) setStatus(`Deleting ${state.current.label}… ${state.current.deleted} message(s) removed`, "info");
   updateItemButtons();
+}
+function removeFileRows(transferIds) {
+  for (const transferId of transferIds) {
+    const controls = itemControls.get(transferId);
+    if (!controls) continue;
+    const { file, item } = controls;
+    item.remove(); itemControls.delete(transferId);
+    shownFiles--;
+    if (!file.available) incompleteFiles--;
+    if (file.missingFile) goneFiles--;
+    loadedChunks -= Number(file.total || file.orphanChunks || 0);
+    loadedSize -= Number(file.originalSize || 0);
+  }
+  if (!shownFiles && scanner?.done) { listFooter.textContent = "No files found."; els.fileList.appendChild(listFooter); }
+  loadIfAtBottom(); // fills the gap if the list no longer scrolls
 }
 // The list starts with the newest few files and reads further back in the
 // channel only when it is scrolled to the bottom.
